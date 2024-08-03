@@ -4,9 +4,13 @@ Connects to Frame, streams audio from the Host (phone) microphone (for now - str
 
 Drop in an alternative [Vosk model](https://alphacephei.com/vosk/models) to perform speech-to-text in a language other than English (`vosk-model-small-en-us-0.15` included). Frame only displays languages in a latin character set, so text might need to be tweaked before sending to Frame. The model name appears in `main.dart` and `pubspec.yaml`.
 
+As it uses a small (40MB) on-device model, there are limitations in vocabulary. Very long utterances can cause problems (also with text rendering at the moment) so it works best with a short pause between sentences.
+
 ### Frameshots, Screenshots
 ![Frameshot1](docs/frameshot1.png)
-![Framecast1](docs/framecast1.mp4)
+
+https://github.com/user-attachments/assets/e7438d5e-4aad-4117-b5a8-c912fb562bfe
+
 ![Screenshot1](docs/screenshot1.png)
 ![Screenshot2](docs/screenshot2.png)
 
