@@ -4,10 +4,12 @@ import 'dart:typed_data';
 
 import 'package:buffered_list_stream/buffered_list_stream.dart';
 import 'package:flutter/material.dart';
+import 'package:logging/logging.dart';
 import 'package:record/record.dart';
 import 'package:vosk_flutter/vosk_flutter.dart';
+
 import 'bluetooth.dart';
-import 'package:logging/logging.dart';
+import 'display_helper.dart';
 
 void main() => runApp(const MainApp());
 
@@ -296,7 +298,7 @@ class MainAppState extends State<MainApp> {
             // if the user has clicked Stop we want to stop processing
             // and clear the display
             if (_currentState != ApplicationState.running) {
-              await _connectedDevice!.sendString('frame.display.text(" ", 50, 100) frame.display.show()', awaitResponse: false);
+              DisplayHelper.clear(_connectedDevice!);
               break;
             }
 
@@ -305,12 +307,12 @@ class MainAppState extends State<MainApp> {
             if (resultReady) {
               var result = await _recognizer!.getResult();
 
-              // depending on the model's output, we might need to escape it before sending lua embedded in the string
               var text = jsonDecode(result)['text'];
               _log.fine('Recognized text: $text');
 
               try {
-                await _connectedDevice!.sendString('frame.display.text("$text", 1, 100, {color="WHITE"}) frame.display.show()', awaitResponse: false);
+                DisplayHelper.writeText(_connectedDevice!, text);
+                DisplayHelper.show(_connectedDevice!);
               }
               catch (e) {
                 _log.fine('Error sending text to Frame: $e');
@@ -320,14 +322,14 @@ class MainAppState extends State<MainApp> {
             else {
               var result = await _recognizer!.getPartialResult();
 
-              // depending on the model's output, we might need to escape it before sending lua embedded in the string
               var text = jsonDecode(result)['partial'];
 
-              // Partials are often empty strings
+              // Partials are often empty strings so don't bother sending them
               if (text != null && text != '') {
                 _log.fine('Partial text: $text');
                 try {
-                  await _connectedDevice!.sendString('frame.display.text("$text", 1, 200, {color="RED"}) frame.display.show()', awaitResponse: false);
+                  DisplayHelper.writeText(_connectedDevice!, text);
+                  DisplayHelper.show(_connectedDevice!);
                 }
                 catch (e) {
                   _log.fine('Error sending text to Frame: $e');

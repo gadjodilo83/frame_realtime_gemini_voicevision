@@ -1,1 +1,3 @@
 -keep class com.lib.flutter_blue_plus.* { *; }
+-keep class com.sun.jna.* { *; }
+-keepclassmembers class * extends com.sun.jna.* { public *; }
