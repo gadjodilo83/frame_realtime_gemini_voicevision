@@ -111,7 +111,7 @@ class MainAppState extends State<MainApp> {
       try {
         // terminate the main.lua (if currently running) so we can run our lua code
         // TODO looks like if the signal comes too early after connection, it isn't registered
-        Future.delayed(const Duration(milliseconds: 500));
+        await Future.delayed(const Duration(milliseconds: 500));
         await _connectedDevice!.sendBreakSignal();
 
         // Application is ready to go!
@@ -153,7 +153,7 @@ class MainAppState extends State<MainApp> {
         try {
           // terminate the main.lua (if currently running) so we can run our lua code
           // TODO looks like if the signal comes too early after connection, it isn't registered
-          Future.delayed(const Duration(milliseconds: 500));
+          await Future.delayed(const Duration(milliseconds: 500));
           await _connectedDevice!.sendBreakSignal();
 
           // Application is ready to go!
