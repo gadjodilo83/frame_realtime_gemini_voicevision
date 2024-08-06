@@ -1,4 +1,4 @@
-import 'bluetooth.dart';
+import 'brilliant_bluetooth.dart';
 
 enum HorizontalAlignment {
   left,
