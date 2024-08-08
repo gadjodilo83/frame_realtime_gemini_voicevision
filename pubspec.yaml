@@ -24,3 +24,4 @@ flutter:
   uses-material-design: true
   assets:
     - assets/vosk-model-small-en-us-0.15.zip
+    - assets/frame_app.lua

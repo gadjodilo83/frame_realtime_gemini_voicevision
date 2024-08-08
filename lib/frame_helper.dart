@@ -12,7 +12,7 @@ enum VerticalAlignment {
   bottom,
 }
 
-class DisplayHelper {
+class FrameHelper {
   static const _lineHeight = 60;
 
   static const Map<int, int> charWidthMapping = {
