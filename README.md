@@ -9,10 +9,7 @@ As it uses a small (40MB) on-device model, there are limitations in vocabulary. 
 ### Frameshots, Screenshots
 ![Frameshot1](docs/frameshot1.png)
 
-https://github.com/user-attachments/assets/e7438d5e-4aad-4117-b5a8-c912fb562bfe
-
 ![Screenshot1](docs/screenshot1.png)
-![Screenshot2](docs/screenshot2.png)
 
 ### Architecture
 ![Architecture](docs/Frame%20App%20Architecture%20-%20Speech-To-Text%20Host%20-%20Host%20Microphone.svg)
