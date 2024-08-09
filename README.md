@@ -9,6 +9,8 @@ As it uses a small (40MB) on-device model, there are limitations in vocabulary. 
 ### Frameshots, Screenshots
 ![Frameshot1](docs/frameshot1.png)
 
+https://github.com/user-attachments/assets/ca39afa0-dcdc-43d7-98ce-c002f42d161d
+
 ![Screenshot1](docs/screenshot1.png)
 
 ### Architecture
