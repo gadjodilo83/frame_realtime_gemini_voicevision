@@ -20,6 +20,9 @@ enum ApplicationState {
 final _log = Logger("SFA");
 
 mixin SimpleFrameAppState<T extends StatefulWidget> on State<T> {
+  // Frame to Phone flags
+  static const batteryStatusFlag = 0x0c;
+
   ApplicationState currentState = ApplicationState.disconnected;
   int? _batt;
 
@@ -225,17 +228,14 @@ mixin SimpleFrameAppState<T extends StatefulWidget> on State<T> {
     _rxAppData?.cancel();
     _rxAppData = frame!.dataResponse.listen((data) {
       if (data.length > 1) {
-        // battery level message
-        if (data[0] == 0x0c) {
+        // at this stage simple frame app only handles battery level message 0x0c
+        // let any other application-specific message be handled by the app when
+        // they listen on dataResponse
+        if (data[0] == batteryStatusFlag) {
           _batt = data[1];
           if (mounted) setState(() {});
         }
-        else {
-          _log.severe('Unexpected AppData Message Type: ${data[0]}');
-        }
       }
-      // TODO also dispatch to the end-user's implementation of the dataResponse handler
-      // - either strip out the battery message and map the result like BrilliantBluetooth does, or just pass all data through
     });
 
     // subscribe one listener to the stdout stream
