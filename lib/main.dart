@@ -7,9 +7,8 @@ import 'package:flutter/material.dart';
 import 'package:logging/logging.dart';
 import 'package:record/record.dart';
 import 'package:vosk_flutter/vosk_flutter.dart';
-
-import 'frame_helper.dart';
-import 'simple_frame_app.dart';
+import 'package:simple_frame_app/frame_helper.dart';
+import 'package:simple_frame_app/simple_frame_app.dart';
 
 void main() => runApp(const MainApp());
 
