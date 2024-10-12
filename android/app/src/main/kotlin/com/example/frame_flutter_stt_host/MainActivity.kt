@@ -1,4 +1,4 @@
-package com.example.frame_flutter_stt_host
+package com.example.frame_transcribe_vosk
 
 import io.flutter.embedding.android.FlutterActivity
 

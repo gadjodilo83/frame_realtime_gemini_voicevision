@@ -1,4 +1,4 @@
-name: frame_flutter_stt_host
+name: frame_transcribe_vosk
 description: "Connects to Frame and streams audio from its microphone, which is sent through a local (on Host device) vosk speech-to-text engine, and displays the streaming text on the Frame display."
 publish_to: 'none'
 version: 0.1.0
