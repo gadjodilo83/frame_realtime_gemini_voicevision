@@ -7,7 +7,6 @@ import 'package:logging/logging.dart';
 import 'package:simple_frame_app/audio_data_response.dart';
 import 'package:simple_frame_app/tx/code.dart';
 import 'package:simple_frame_app/tx/plain_text.dart';
-import 'package:vosk_flutter/vosk_flutter.dart';
 import 'package:simple_frame_app/text_utils.dart';
 import 'package:simple_frame_app/simple_frame_app.dart';
 

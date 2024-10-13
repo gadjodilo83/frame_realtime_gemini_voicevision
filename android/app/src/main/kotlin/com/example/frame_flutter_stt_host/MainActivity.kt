@@ -1,4 +1,4 @@
-package com.example.frame_transcribe_vosk
+package com.example.frame_transcribe_googlespeech
 
 import io.flutter.embedding.android.FlutterActivity
 

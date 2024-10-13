@@ -1,5 +1,5 @@
-name: frame_transcribe_vosk
-description: "Connects to Frame and streams audio from its microphone, which is sent through a local (on Host device) vosk speech-to-text engine, and displays the streaming text on the Frame display."
+name: frame_transcribe_googlespeech
+description: "Connects to Frame, streams audio from the Frame microphone, which is sent through a cloud-based streaming transcription service, and displays the streaming text on the Frame display."
 publish_to: 'none'
 version: 0.1.0
 
@@ -9,7 +9,6 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  vosk_flutter: ^0.3.48
   logging: ^1.2.0
   simple_frame_app:
     path: ../simple_frame_app
@@ -26,5 +25,4 @@ flutter:
     - packages/simple_frame_app/lua/data.min.lua
     - packages/simple_frame_app/lua/code.min.lua
     - packages/simple_frame_app/lua/plain_text.min.lua
-    - assets/vosk-model-small-en-us-0.15.zip
     - assets/frame_app.min.lua
