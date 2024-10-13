@@ -2,10 +2,10 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
-import 'package:buffered_list_stream/buffered_list_stream.dart';
 import 'package:flutter/material.dart';
 import 'package:logging/logging.dart';
-import 'package:record/record.dart';
+import 'package:simple_frame_app/audio_data_response.dart';
+import 'package:simple_frame_app/tx/code.dart';
 import 'package:simple_frame_app/tx/plain_text.dart';
 import 'package:vosk_flutter/vosk_flutter.dart';
 import 'package:simple_frame_app/text_utils.dart';
@@ -37,7 +37,7 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
   final _vosk = VoskFlutterPlugin.instance();
   late final Model _model;
   late final Recognizer _recognizer;
-  static const _sampleRate = 16000;
+  static const _sampleRate = 8000; // Note: Vosk Android models require 16kHz sample rate
 
   String _partialResult = "N/A";
   String _finalResult = "N/A";
@@ -67,51 +67,7 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
     if (mounted) setState(() {});
   }
 
-  /// Sets up the Audio used for the application.
-  /// Returns true if the audio is set up correctly, in which case
-  /// it also returns a reference to the AudioRecorder and the
-  /// audioSampleBufferedStream
-  Future<(bool, AudioRecorder?, Stream<List<int>>?)> startAudio() async {
-    // create a fresh AudioRecorder each time we run - it will be dispose()d when we click stop
-    AudioRecorder audioRecorder = AudioRecorder();
-
-    // Check and request permission if needed
-    if (!await audioRecorder.hasPermission()) {
-      return (false, null, null);
-    }
-
-    try {
-      // start the audio stream
-      // TODO select suitable sample rate for the Frame given BLE bandwidth constraints if we want to switch to Frame mic
-      final recordStream = await audioRecorder.startStream(
-        const RecordConfig(encoder: AudioEncoder.pcm16bits,
-          numChannels: 1,
-          sampleRate: _sampleRate));
-
-      // buffer the audio stream into chunks of 4096 samples
-      final audioSampleBufferedStream = bufferedListStream(
-        recordStream.map((event) {
-          return event.toList();
-        }),
-        // samples are PCM16, so 2 bytes per sample
-        4096 * 2,
-      );
-
-      return (true, audioRecorder, audioSampleBufferedStream);
-
-    } catch (e) {
-      _log.severe('Error starting Audio: $e');
-      return (false, null, null);
-    }
-  }
-
-  Future<void> stopAudio(AudioRecorder recorder) async {
-    // stop the audio
-    await recorder.stop();
-    await recorder.dispose();
-  }
-
-  /// This application uses vosk speech-to-text to listen to audio from the host mic, convert to text,
+  /// This application uses vosk speech-to-text to listen to audio from the Frame mic, convert to text,
   /// and send the text to the Frame in real-time. It has a running main loop in this function
   /// and also on the Frame (frame_app.lua)
   @override
@@ -121,18 +77,16 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
     _finalResult = '';
     if (mounted) setState(() {});
 
+    // tell Frame to start streaming audio
+    await frame!.sendMessage(TxCode(msgCode: 0x30));
+
     try {
-      var (ok, audioRecorder, audioSampleBufferedStream) = await startAudio();
-      if (!ok) {
-        currentState = ApplicationState.ready;
-        if (mounted) setState(() {});
-        return;
-      }
+      var audioSampleStream = audioDataStreamResponse(frame!.dataResponse);
 
       String prevText = '';
 
       // loop over the incoming audio data and send reults to Frame
-      await for (var audioSample in audioSampleBufferedStream!) {
+      await for (var audioSample in audioSampleStream!) {
         // if the user has clicked Stop we want to jump out of the main loop and stop processing
         if (currentState != ApplicationState.running) {
           break;
@@ -184,7 +138,8 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
         prevText = text;
       }
 
-      await stopAudio(audioRecorder!);
+      // tell Frame to stop streaming audio
+      await frame!.sendMessage(TxCode(msgCode: 0x31));
 
     } catch (e) {
       _log.fine('Error executing application logic: $e');
