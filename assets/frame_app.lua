@@ -7,15 +7,22 @@ local plain_text = require('plain_text.min')
 TEXT_MSG = 0x0b
 START_AUDIO_MSG = 0x30
 STOP_AUDIO_MSG = 0x31
+TAP_SUBS_MSG = 0x10
 
 -- register the message parser so it's automatically called when matching data comes in
 data.parsers[TEXT_MSG] = plain_text.parse_plain_text
 data.parsers[START_AUDIO_MSG] = code.parse_code
 data.parsers[STOP_AUDIO_MSG] = code.parse_code
+data.parsers[TAP_SUBS_MSG] = code.parse_code
 
 -- Frame to Phone flags
 AUDIO_DATA_NON_FINAL_MSG = 0x05
 AUDIO_DATA_FINAL_MSG = 0x06
+TAP_MSG = 0x09
+
+function handle_tap()
+	pcall(frame.bluetooth.send, string.char(TAP_MSG))
+end
 
 -- draw the current text on the display
 function print_text()
@@ -47,32 +54,44 @@ function app_loop()
                 local items_ready = data.process_raw_items()
 
                 if items_ready > 0 then
+
                     if (data.app_data[TEXT_MSG] ~= nil and data.app_data[TEXT_MSG].string ~= nil) then
                         print_text()
+                        frame.display.show()
                     end
-                    frame.display.show()
+
+                    if (data.app_data[TAP_SUBS_MSG] ~= nil) then
+
+                        if data.app_data[TAP_SUBS_MSG].value == 1 then
+                            -- start subscription to tap events
+                            frame.imu.tap_callback(handle_tap)
+                        else
+                            -- cancel subscription to tap events
+                            frame.imu.tap_callback(nil)
+                        end
+
+                        data.app_data[TAP_SUBS_MSG] = nil
+                    end
+
+                    if (data.app_data[START_AUDIO_MSG] ~= nil) then
+                        audio_data = ''
+                        pcall(frame.microphone.start, {sample_rate=8000, bit_depth=16})
+                        streaming = true
+                        frame.display.text("Streaming Audio", 1, 1)
+                        frame.display.show()
+
+                        data.app_data[START_AUDIO_MSG] = nil
+                    end
+
+                    if (data.app_data[STOP_AUDIO_MSG] ~= nil) then
+                        pcall(frame.microphone.stop)
+                        -- clear the display
+                        frame.display.text(" ", 1, 1)
+                        frame.display.show()
+
+                        data.app_data[STOP_AUDIO_MSG] = nil
+                    end
                 end
-
-                if (data.app_data[START_AUDIO_MSG] ~= nil) then
-                    audio_data = ''
-                    pcall(frame.microphone.start, {sample_rate=8000, bit_depth=16})
-                    streaming = true
-                    frame.display.text("Streaming Audio", 1, 1)
-                    frame.display.show()
-
-                    data.app_data[START_AUDIO_MSG] = nil
-                end
-
-                if (data.app_data[STOP_AUDIO_MSG] ~= nil) then
-                    pcall(frame.microphone.stop)
-                    -- clear the display
-                    frame.display.text(" ", 1, 1)
-                    frame.display.show()
-
-                    data.app_data[STOP_AUDIO_MSG] = nil
-                end
-
-                frame.sleep(0.04)
             end
         )
         -- Catch the break signal here and clean up the display
@@ -88,8 +107,8 @@ function app_loop()
         -- send any pending audio data back
 		-- Streams until STOP_AUDIO_MSG is sent from phone
 		-- (prioritize the reading and sending about 20x compared to checking for other events e.g. STOP_AUDIO_MSG)
-		for i=1,20 do
-			if streaming then
+        if streaming then
+            for i=1,20 do
 				audio_data = frame.microphone.read(mtu)
 
 				-- Calling frame.microphone.stop() will allow this to break the loop
@@ -106,7 +125,6 @@ function app_loop()
 				end
 			end
 		end
-
 
         -- periodic battery level updates, 120s
         last_batt_update = battery.send_batt_if_elapsed(last_batt_update, 120)

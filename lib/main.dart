@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:google_speech/endless_streaming_service_v2.dart';
@@ -7,6 +8,7 @@ import 'package:google_speech/google_speech.dart';
 import 'package:logging/logging.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:simple_frame_app/audio_data_response.dart';
+import 'package:simple_frame_app/tap_data_response.dart';
 import 'package:simple_frame_app/tx/code.dart';
 import 'package:simple_frame_app/tx/plain_text.dart';
 import 'package:simple_frame_app/text_utils.dart';
@@ -34,13 +36,18 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
   }
 
   /// speech to text application members
-  static const _sampleRate = 8000;
   final TextEditingController _serviceAccountJsonController = TextEditingController();
   final TextEditingController _projectIdController = TextEditingController();
   final TextEditingController _languageCodeController = TextEditingController();
+  // 16-bit linear PCM from Frame mic
+  Stream<Uint8List>? audioSampleStream;
+  static const _sampleRate = 8000;
+
+  StreamSubscription<int>? _tapSubs;
 
   String _partialResult = 'N/A';
-  String _finalResult = 'N/A';
+  final List<String> _transcript = List.empty(growable: true);
+  final ScrollController _transcriptController = ScrollController();
   static const _textStyle = TextStyle(fontSize: 30);
 
   @override
@@ -49,17 +56,6 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
 
     _loadPrefs();
   }
-
-  RecognitionConfigV2 _getRecognitionConfig() => RecognitionConfigV2(
-    model: RecognitionModelV2.telephony, // TODO try .long, .telephony (for self vs others' speech)
-    languageCodes: [_languageCodeController.text], // TODO try multi-codes e.g. ['de-DE', 'en-US'], what does it mean to have more in the list, it seemed to only use German
-    features: RecognitionFeatures(),
-    explicitDecodingConfig: ExplicitDecodingConfig(
-      encoding: ExplicitDecodingConfig_AudioEncoding.LINEAR16,
-      sampleRateHertz: _sampleRate,
-      audioChannelCount: 1,
-    )
-  );
 
   Future<void> _loadPrefs() async {
     final prefs = await SharedPreferences.getInstance();
@@ -78,6 +74,16 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
     await prefs.setString('language_code', _languageCodeController.text);
   }
 
+  RecognitionConfigV2 _getRecognitionConfig() => RecognitionConfigV2(
+    model: RecognitionModelV2.telephony, // TODO try .long, .telephony (for self vs others' speech)
+    languageCodes: [_languageCodeController.text], // TODO try multi-codes e.g. ['de-DE', 'en-US'], what does it mean to have more in the list, it seemed to only use German
+    features: RecognitionFeatures(),
+    explicitDecodingConfig: ExplicitDecodingConfig(
+      encoding: ExplicitDecodingConfig_AudioEncoding.LINEAR16,
+      sampleRateHertz: _sampleRate,
+      audioChannelCount: 1,
+    )
+  );
 
   /// This application uses google cloud speech-to-text to listen to audio from the Frame mic, convert to text,
   /// and send the text to the Frame in real-time. It has a running main loop in this function
@@ -91,9 +97,57 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
 
     currentState = ApplicationState.running;
     _partialResult = '';
-    _finalResult = '';
+    _transcript.clear();
     if (mounted) setState(() {});
 
+    try {
+      // listen for double taps to start transcribing
+      _tapSubs?.cancel();
+      _tapSubs = tapDataResponse(frame!.dataResponse, const Duration(milliseconds: 300))
+        .listen((taps) {
+          if (taps >= 2) {
+            // clear the display
+            frame!.sendMessage(TxPlainText(msgCode: 0x0b, text: ' '));
+            _startRecognition();
+          }
+          // ignore spurious 1-taps
+        });
+
+      // let Frame know to subscribe for taps and send them to us
+      await frame!.sendMessage(TxCode(msgCode: 0x10, value: 1));
+
+      // prompt the user to begin tapping
+      await frame!.sendMessage(TxPlainText(msgCode: 0x0b, text: 'Double-Tap to begin!'));
+
+    } catch (e) {
+      _log.fine('Error executing application logic: $e');
+      currentState = ApplicationState.ready;
+      if (mounted) setState(() {});
+    }
+  }
+
+  /// Once running(), audio streaming is controlled by taps. But the user can cancel
+  /// here as well, whether they are currently streaming audio or not.
+  @override
+  Future<void> cancel() async {
+    setState(() {
+      currentState = ApplicationState.canceling;
+    });
+
+    // make sure we stop streaming if we are currently
+    await frame!.sendMessage(TxCode(msgCode: 0x31));
+
+    // let Frame know to cancel subscription for taps too
+    await frame!.sendMessage(TxCode(msgCode: 0x10, value: 0));
+
+    setState(() {
+      currentState = ApplicationState.ready;
+    });
+  }
+
+  /// When we receive a tap to start the transcribing, we need to start
+  /// audio streaming on Frame and start streaming recognition on the google speech API end
+  Future<void> _startRecognition() async {
     final speechToText = EndlessStreamingServiceV2.viaServiceAccount(
       ServiceAccount.fromString(_serviceAccountJsonController.text),
       projectId: _projectIdController.text,
@@ -105,12 +159,9 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
     await frame!.sendMessage(TxCode(msgCode: 0x30));
 
     try {
-      // TODO do I need to keep a reference to this stream outside run()
-      // so I can inject no audio data bytes (how? stream.add(Uint8List(0)?)) maybe drain()
-      // the remaining stream and close it when the user taps to stop streaming?
-      var audioSampleStream = audioDataStreamResponse(frame!.dataResponse);
+      // the audio stream from Frame, which needs to be closed() to stop the streaming recognition
+      audioSampleStream = audioDataStreamResponse(frame!.dataResponse);
 
-      String responseText = '';
       String prevText = '';
 
       speechToText.endlessStreamingRecognize(
@@ -118,7 +169,7 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
             config: recognitionConfig,
             streamingFeatures: StreamingRecognitionFeatures(interimResults: true)
         ),
-        audioSampleStream,
+        audioSampleStream!,
         restartTime: const Duration(seconds: 60),
         transitionBufferTime: const Duration(seconds: 2)
       );
@@ -127,38 +178,58 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
       // we stop the recognition stream by stopping the audio stream, not by canceling the subscription
       speechToText.endlessStream.listen((data) async {
         // TODO remove? Too much detail?
-        _log.finer('Result: $data');
+        _log.fine('Result: $data');
 
-        // just look at the first alternative for now (consider other language alternatives if provided?)
+        // just use the first alternative for now (consider other language alternatives if provided?)
+        // and concatenate all the pieces (regardless of stability or whether this result(s) is final or not)
         final currentText =
             data.results.where((e) => e.alternatives.isNotEmpty)
             .map((e) => e.alternatives.first.transcript)
-            .join('\n');
+            .join();
 
         if (_log.isLoggable(Level.FINE)) {
           _log.fine('Recognized text: $currentText');
         }
 
-        // send current text to Frame (only if it's different to what's on there already)
-        if (currentText != prevText) {
+        // if the current text is different from the previous text, send an update to Frame
+        // (there are many responses that split in different places, have different stability values,
+        // but concatenate to the same string in our case)
+        if (currentText != prevText) { // TODO (and Latin script?)
+          // Frame can display N lines of plain text, so work out the text wrapping then send
+          // the bottom N lines to the display
+          // TODO TextUtil wrap, sublist, join
+          // TODO change wrapText to return a List of Strings
           String wrappedText = TextUtils.wrapText(currentText, 640, 4);
+
+          // TODO join the last N lines with '\n' for display
+
           await frame!.sendMessage(TxPlainText(msgCode: 0x0b, text: wrappedText));
-          prevText = currentText;
         }
 
-        // TODO does it ever change its mind? This seems to append without rewriting any previous partial results
+        // When a complete utterance is detected, isFinal is set and we can append
+        // the utterance to the final transcript.
+        // In between, there are non-final fragments, and they can be shown as previews but not appended
+        // to the final transcript. A newline doesn't need to be added either.
         if (data.results.first.isFinal) {
-          responseText += '\n$currentText';
+          // data.results.first.alternatives.first.transcript should match currentText
+          // (the complete utterance) when isFinal is true
+          assert(currentText == data.results.first.alternatives.first.transcript);
+
+          // add currentText to the official transcript and clear out the interim
           setState(() {
-            _finalResult = responseText;
+            _transcript.add(currentText);
             _partialResult = '';
           });
+          _scrollToBottom();
+
         } else {
+          // interim results, show the interim result but don't add to the official transcript yet
           setState(() {
-            _partialResult = '$responseText\n$currentText';
-            _finalResult = '';
+            _partialResult = currentText;
           });
+
         }
+
       }, onDone: () {
         // audio stream was stopped so Recognizer stream stopped
         setState(() {
@@ -171,18 +242,29 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
     }
   }
 
-  /// The run() function will keep running until we interrupt it here
-  /// and it will stop listening to audio
-  @override
-  Future<void> cancel() async {
-    setState(() {
-      currentState = ApplicationState.canceling;
-    });
-
+  /// When we receive a tap to stop transcribing, cancel the audio streaming from Frame,
+  /// close the audio stream (and the streaming recognizer connection should stop too)
+  Future<void> _stopRecognition() async {
     // tell Frame to stop streaming audio
     await frame!.sendMessage(TxCode(msgCode: 0x31));
 
+    // TODO is this enough to close the stream? I don't think so.
+    // Also do stream.close(), maybe drain() it too to stop it right now. Can I do that from this thread?
+    await audioSampleStream!.drain();
+
     // currentState gets set to ApplicationState.ready in listen's onDone()
+  }
+
+  void _scrollToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_transcriptController.hasClients) {
+        _transcriptController.animateTo(
+          _transcriptController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+      }
+    });
   }
 
   @override
@@ -209,12 +291,22 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
                 Expanded(child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    Align(alignment: Alignment.centerLeft,
-                      child: Text('Partial: $_partialResult', style: _textStyle)
+                    SizedBox(
+                      height: 200,
+                      child: ListView.builder(
+                        controller: _transcriptController, // Auto-scroll controller
+                        itemCount: _transcript.length,
+                        itemBuilder: (context, index) {
+                          return Text(
+                            _transcript[index],
+                            style: _textStyle,
+                          );
+                        },
+                      ),
                     ),
                     const Divider(),
                     Align(alignment: Alignment.centerLeft,
-                      child: Text('Final: $_finalResult', style: _textStyle)
+                      child: Text('Partial: $_partialResult', style: _textStyle)
                     ),
                   ],
                 )),
