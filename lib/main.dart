@@ -1,9 +1,11 @@
 import 'dart:async';
-import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:google_speech/endless_streaming_service_v2.dart';
+import 'package:google_speech/generated/google/cloud/speech/v2/cloud_speech.pb.dart';
+import 'package:google_speech/google_speech.dart';
 import 'package:logging/logging.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:simple_frame_app/audio_data_response.dart';
 import 'package:simple_frame_app/tx/code.dart';
 import 'package:simple_frame_app/tx/plain_text.dart';
@@ -25,145 +27,172 @@ class MainApp extends StatefulWidget {
 class MainAppState extends State<MainApp> with SimpleFrameAppState {
 
   MainAppState() {
-    Logger.root.level = Level.INFO;
+    Logger.root.level = Level.FINER;
     Logger.root.onRecord.listen((record) {
       debugPrint('${record.level.name}: [${record.loggerName}] ${record.time}: ${record.message}');
     });
   }
 
   /// speech to text application members
-  static const _modelName = 'vosk-model-small-en-us-0.15.zip';
-  final _vosk = VoskFlutterPlugin.instance();
-  late final Model _model;
-  late final Recognizer _recognizer;
-  static const _sampleRate = 8000; // Note: Vosk Android models require 16kHz sample rate
+  static const _sampleRate = 8000;
+  final TextEditingController _serviceAccountJsonController = TextEditingController();
+  final TextEditingController _projectIdController = TextEditingController();
+  final TextEditingController _languageCodeController = TextEditingController();
 
-  String _partialResult = "N/A";
-  String _finalResult = "N/A";
+  String _partialResult = 'N/A';
+  String _finalResult = 'N/A';
   static const _textStyle = TextStyle(fontSize: 30);
 
   @override
   void initState() {
     super.initState();
-    currentState = ApplicationState.initializing;
-    // asynchronously kick off Vosk initialization
-    _initVosk();
+
+    _loadPrefs();
   }
 
-  @override
-  void dispose() async {
-    _model.dispose();
-    _recognizer.dispose();
-    super.dispose();
+  RecognitionConfigV2 _getRecognitionConfig() => RecognitionConfigV2(
+    model: RecognitionModelV2.telephony, // TODO try .long, .telephony (for self vs others' speech)
+    languageCodes: [_languageCodeController.text], // TODO try multi-codes e.g. ['de-DE', 'en-US'], what does it mean to have more in the list, it seemed to only use German
+    features: RecognitionFeatures(),
+    explicitDecodingConfig: ExplicitDecodingConfig(
+      encoding: ExplicitDecodingConfig_AudioEncoding.LINEAR16,
+      sampleRateHertz: _sampleRate,
+      audioChannelCount: 1,
+    )
+  );
+
+  Future<void> _loadPrefs() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      _serviceAccountJsonController.text = prefs.getString('service_account_json') ?? '';
+      _projectIdController.text = prefs.getString('project_id') ?? '';
+      _languageCodeController.text = prefs.getString('language_code') ?? '';
+    });
   }
 
-  void _initVosk() async {
-    final enSmallModelPath = await ModelLoader().loadFromAssets('assets/$_modelName');
-    _model = await _vosk.createModel(enSmallModelPath);
-    _recognizer = await _vosk.createRecognizer(model: _model, sampleRate: _sampleRate);
+  Future<void> _savePrefs() async {
+    final prefs = await SharedPreferences.getInstance();
 
-    currentState = ApplicationState.disconnected;
-    if (mounted) setState(() {});
+    await prefs.setString('service_account_json', _serviceAccountJsonController.text);
+    await prefs.setString('project_id', _projectIdController.text);
+    await prefs.setString('language_code', _languageCodeController.text);
   }
 
-  /// This application uses vosk speech-to-text to listen to audio from the Frame mic, convert to text,
+
+  /// This application uses google cloud speech-to-text to listen to audio from the Frame mic, convert to text,
   /// and send the text to the Frame in real-time. It has a running main loop in this function
   /// and also on the Frame (frame_app.lua)
   @override
   Future<void> run() async {
+    if (_serviceAccountJsonController.text.isEmpty || _projectIdController.text.isEmpty || _languageCodeController.text.isEmpty) {
+      _log.fine('Set values for service account, project id and language code'); // TODO Toast?
+      return;
+    }
+
     currentState = ApplicationState.running;
     _partialResult = '';
     _finalResult = '';
     if (mounted) setState(() {});
 
+    final speechToText = EndlessStreamingServiceV2.viaServiceAccount(
+      ServiceAccount.fromString(_serviceAccountJsonController.text),
+      projectId: _projectIdController.text,
+    );
+
+    final recognitionConfig = _getRecognitionConfig();
+
     // tell Frame to start streaming audio
     await frame!.sendMessage(TxCode(msgCode: 0x30));
 
     try {
+      // TODO do I need to keep a reference to this stream outside run()
+      // so I can inject no audio data bytes (how? stream.add(Uint8List(0)?)) maybe drain()
+      // the remaining stream and close it when the user taps to stop streaming?
       var audioSampleStream = audioDataStreamResponse(frame!.dataResponse);
 
+      String responseText = '';
       String prevText = '';
 
-      // loop over the incoming audio data and send reults to Frame
-      await for (var audioSample in audioSampleStream!) {
-        // if the user has clicked Stop we want to jump out of the main loop and stop processing
-        if (currentState != ApplicationState.running) {
-          break;
-        }
+      speechToText.endlessStreamingRecognize(
+        StreamingRecognitionConfigV2(
+            config: recognitionConfig,
+            streamingFeatures: StreamingRecognitionFeatures(interimResults: true)
+        ),
+        audioSampleStream,
+        restartTime: const Duration(seconds: 60),
+        transitionBufferTime: const Duration(seconds: 2)
+      );
 
-        // recognizer blocks until it has something
-        final resultReady = await _recognizer.acceptWaveformBytes(Uint8List.fromList(audioSample));
+      // TODO any value in keeping a handle on the StreamSubscription?
+      // we stop the recognition stream by stopping the audio stream, not by canceling the subscription
+      speechToText.endlessStream.listen((data) async {
+        // TODO remove? Too much detail?
+        _log.finer('Result: $data');
 
-        // TODO consider enabling alternatives, and word times, and ...?
-        String text = resultReady ?
-            jsonDecode(await _recognizer.getResult())['text']
-          : jsonDecode(await _recognizer.getPartialResult())['partial'];
-
-        // If the text is the same as the previous one, we don't send it to Frame and force a redraw
-        // The recognizer often produces a bunch of empty string in a row too, so this means
-        // we send the first one (clears the display) but not subsequent ones
-        // Often the final result matches the last partial, so if it's a final result then show it
-        // on the phone but don't send it
-        if (text == prevText) {
-          if (resultReady) {
-            setState(() { _finalResult = text; _partialResult = ''; });
-          }
-          continue;
-        }
-        else if (text.isEmpty) {
-          // turn the empty string into a single space and send
-          // still can't put it through the wrapped-text-chunked-sender
-          // because it will be zero bytes payload so no message will
-          // be sent.
-          // Users might say this first empty partial
-          // comes a bit soon and hence the display is cleared a little sooner
-          // than they want (not like audio hangs around in the air though
-          // after words are spoken!)
-          await frame!.sendMessage(TxPlainText(msgCode: 0x0b, text: ' '));
-          prevText = '';
-          continue;
-        }
+        // just look at the first alternative for now (consider other language alternatives if provided?)
+        final currentText =
+            data.results.where((e) => e.alternatives.isNotEmpty)
+            .map((e) => e.alternatives.first.transcript)
+            .join('\n');
 
         if (_log.isLoggable(Level.FINE)) {
-          _log.fine('Recognized text: $text');
+          _log.fine('Recognized text: $currentText');
         }
 
-        // send current text to Frame
-        String wrappedText = TextUtils.wrapText(text, 640, 4);
-        await frame!.sendMessage(TxPlainText(msgCode: 0x0b, text: wrappedText));
+        // send current text to Frame (only if it's different to what's on there already)
+        if (currentText != prevText) {
+          String wrappedText = TextUtils.wrapText(currentText, 640, 4);
+          await frame!.sendMessage(TxPlainText(msgCode: 0x0b, text: wrappedText));
+          prevText = currentText;
+        }
 
-        // update the phone UI too
-        setState(() => resultReady ? _finalResult = text : _partialResult = text);
-        prevText = text;
-      }
-
-      // tell Frame to stop streaming audio
-      await frame!.sendMessage(TxCode(msgCode: 0x31));
+        // TODO does it ever change its mind? This seems to append without rewriting any previous partial results
+        if (data.results.first.isFinal) {
+          responseText += '\n$currentText';
+          setState(() {
+            _finalResult = responseText;
+            _partialResult = '';
+          });
+        } else {
+          setState(() {
+            _partialResult = '$responseText\n$currentText';
+            _finalResult = '';
+          });
+        }
+      }, onDone: () {
+        // audio stream was stopped so Recognizer stream stopped
+        setState(() {
+          currentState = ApplicationState.ready;
+        });
+      });
 
     } catch (e) {
       _log.fine('Error executing application logic: $e');
     }
-
-    currentState = ApplicationState.ready;
-    if (mounted) setState(() {});
   }
 
   /// The run() function will keep running until we interrupt it here
   /// and it will stop listening to audio
   @override
   Future<void> cancel() async {
-    currentState = ApplicationState.ready;
-    if (mounted) setState(() {});
+    setState(() {
+      currentState = ApplicationState.canceling;
+    });
+
+    // tell Frame to stop streaming audio
+    await frame!.sendMessage(TxCode(msgCode: 0x31));
+
+    // currentState gets set to ApplicationState.ready in listen's onDone()
   }
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Speech-to-Text',
+      title: 'Transcribe - Google Cloud Speech',
       theme: ThemeData.dark(),
       home: Scaffold(
         appBar: AppBar(
-          title: const Text("Frame Speech-to-Text"),
+          title: const Text('Transcribe - Google Cloud Speech'),
           actions: [getBatteryWidget()]
         ),
         body: Center(
@@ -172,13 +201,23 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Align(alignment: Alignment.centerLeft,
-                  child: Text('Partial: $_partialResult', style: _textStyle)
-                ),
-                const Divider(),
-                Align(alignment: Alignment.centerLeft,
-                  child: Text('Final: $_finalResult', style: _textStyle)
-                ),
+                TextField(controller: _serviceAccountJsonController, obscureText: true, decoration: const InputDecoration(hintText: 'Enter Service Account JSON'),),
+                TextField(controller: _projectIdController, obscureText: false, decoration: const InputDecoration(hintText: 'Enter Project Id'),),
+                TextField(controller: _languageCodeController, obscureText: false, decoration: const InputDecoration(hintText: 'Enter Language Code e.g. en-US'),),
+                ElevatedButton(onPressed: _savePrefs, child: const Text('Save')),
+
+                Expanded(child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Align(alignment: Alignment.centerLeft,
+                      child: Text('Partial: $_partialResult', style: _textStyle)
+                    ),
+                    const Divider(),
+                    Align(alignment: Alignment.centerLeft,
+                      child: Text('Final: $_finalResult', style: _textStyle)
+                    ),
+                  ],
+                )),
               ],
             ),
           ),
