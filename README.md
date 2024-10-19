@@ -22,6 +22,9 @@ Frame display however only shows Latin script in plain text, so for now this dem
 
 ### Framecasts
 
+https://github.com/user-attachments/assets/593bc473-377a-4e88-b77e-1c894c906939
+
+https://github.com/user-attachments/assets/15d4e98b-54dd-4d4e-bd9a-99a47f81335f
 
 ### Screenshots
 
