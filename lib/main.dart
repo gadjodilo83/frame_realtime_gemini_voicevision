@@ -55,7 +55,7 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
   bool _streaming = false;
 
   // transcription UI display
-  String _partialResult = 'N/A';
+  String _partialResult = '';
   final List<String> _transcript = List.empty(growable: true);
   final ScrollController _transcriptController = ScrollController();
   final ScrollController _partialResultController = ScrollController();
@@ -210,8 +210,8 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
             streamingFeatures: StreamingRecognitionFeatures(interimResults: true)
         ),
         _audioSampleStream!,
-        restartTime: const Duration(seconds: 60),
-        transitionBufferTime: const Duration(seconds: 2)
+        restartTime: const Duration(seconds: 120),
+        transitionBufferTime: const Duration(milliseconds: 500)
       );
 
       // note: we stop the previous recognition stream by stopping its audio stream first
@@ -287,7 +287,7 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
       });
 
     } catch (e) {
-      _log.fine(() => 'Error executing application logic: $e');
+      _log.warning(() => 'Error executing application logic: $e');
     }
   }
 
