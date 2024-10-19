@@ -29,7 +29,13 @@ class MainApp extends StatefulWidget {
 class MainAppState extends State<MainApp> with SimpleFrameAppState {
 
   MainAppState() {
-    Logger.root.level = Level.FINER;
+    // TODO temporarily filter logging
+    hierarchicalLoggingEnabled = true;
+    Logger.root.level = Level.INFO;
+    Logger('Bluetooth').level = Level.OFF;
+    Logger('AudioDR').level = Level.FINE;
+    Logger('TapDR').level = Level.FINE;
+
     Logger.root.onRecord.listen((record) {
       debugPrint('${record.level.name}: [${record.loggerName}] ${record.time}: ${record.message}');
     });
@@ -39,16 +45,22 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
   final TextEditingController _serviceAccountJsonController = TextEditingController();
   final TextEditingController _projectIdController = TextEditingController();
   final TextEditingController _languageCodeController = TextEditingController();
+  StreamSubscription<StreamingRecognizeResponse>? _recognitionSubs;
   // 16-bit linear PCM from Frame mic
-  Stream<Uint8List>? audioSampleStream;
+  Stream<Uint8List>? _audioSampleStream;
   static const _sampleRate = 8000;
 
+  // tap subscription and audio streaming status
   StreamSubscription<int>? _tapSubs;
+  bool _streaming = false;
 
+  // transcription UI display
   String _partialResult = 'N/A';
   final List<String> _transcript = List.empty(growable: true);
   final ScrollController _transcriptController = ScrollController();
-  static const _textStyle = TextStyle(fontSize: 30);
+  final ScrollController _partialResultController = ScrollController();
+  static const _textStyle = TextStyle(fontSize: 24);
+  String? _errorMsg;
 
   @override
   void initState() {
@@ -76,7 +88,7 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
 
   RecognitionConfigV2 _getRecognitionConfig() => RecognitionConfigV2(
     model: RecognitionModelV2.telephony, // TODO try .long, .telephony (for self vs others' speech)
-    languageCodes: [_languageCodeController.text], // TODO try multi-codes e.g. ['de-DE', 'en-US'], what does it mean to have more in the list, it seemed to only use German
+    languageCodes: [_languageCodeController.text], // TODO try multi-codes e.g. ['de-DE', 'en-US'], how does it choose the transcription language, or do I get transcriptions in both as alternatives?
     features: RecognitionFeatures(),
     explicitDecodingConfig: ExplicitDecodingConfig(
       encoding: ExplicitDecodingConfig_AudioEncoding.LINEAR16,
@@ -90,25 +102,41 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
   /// and also on the Frame (frame_app.lua)
   @override
   Future<void> run() async {
+    // validate Google Cloud Speech-to-Text API parameters exist at least
+    _errorMsg = null;
     if (_serviceAccountJsonController.text.isEmpty || _projectIdController.text.isEmpty || _languageCodeController.text.isEmpty) {
-      _log.fine('Set values for service account, project id and language code'); // TODO Toast?
+      setState(() {
+        _errorMsg = 'Error: Set values for service account, project id and language code';
+      });
+
       return;
     }
 
-    currentState = ApplicationState.running;
-    _partialResult = '';
-    _transcript.clear();
-    if (mounted) setState(() {});
+    setState(() {
+      currentState = ApplicationState.running;
+      _partialResult = '';
+      _transcript.clear();
+    });
 
     try {
-      // listen for double taps to start transcribing
+      // listen for double taps to start/stop transcribing
       _tapSubs?.cancel();
       _tapSubs = tapDataResponse(frame!.dataResponse, const Duration(milliseconds: 300))
-        .listen((taps) {
+        .listen((taps) async {
           if (taps >= 2) {
-            // clear the display
-            frame!.sendMessage(TxPlainText(msgCode: 0x0b, text: ' '));
-            _startRecognition();
+            if (!_streaming) {
+              _streaming = true;
+              // clear the display, the transcribed text will start showing
+              await frame!.sendMessage(TxPlainText(msgCode: 0x0b, text: ' '));
+              await _startRecognition();
+            }
+            else {
+              await _stopRecognition();
+              _streaming = false;
+
+              // prompt the user to begin tapping
+              await frame!.sendMessage(TxPlainText(msgCode: 0x0b, text: 'Double-Tap to resume!'));
+            }
           }
           // ignore spurious 1-taps
         });
@@ -120,9 +148,12 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
       await frame!.sendMessage(TxPlainText(msgCode: 0x0b, text: 'Double-Tap to begin!'));
 
     } catch (e) {
-      _log.fine('Error executing application logic: $e');
-      currentState = ApplicationState.ready;
-      if (mounted) setState(() {});
+      _errorMsg = 'Error executing application logic: $e';
+      _log.fine(_errorMsg);
+
+      setState(() {
+        currentState = ApplicationState.ready;
+      });
     }
   }
 
@@ -134,11 +165,20 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
       currentState = ApplicationState.canceling;
     });
 
-    // make sure we stop streaming if we are currently
+    // cancel the subscription for taps
+    _tapSubs?.cancel();
+
+    // cancel the endless recognition subscription if it's running
+    _recognitionSubs?.cancel();
+
+    // tell the Frame to stop streaming audio (regardless of if we are currently)
     await frame!.sendMessage(TxCode(msgCode: 0x31));
 
-    // let Frame know to cancel subscription for taps too
+    // let Frame know to stop sending taps too
     await frame!.sendMessage(TxCode(msgCode: 0x10, value: 0));
+
+    // clear the display
+    await frame!.sendMessage(TxPlainText(msgCode: 0x0b, text: ' '));
 
     setState(() {
       currentState = ApplicationState.ready;
@@ -160,7 +200,7 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
 
     try {
       // the audio stream from Frame, which needs to be closed() to stop the streaming recognition
-      audioSampleStream = audioDataStreamResponse(frame!.dataResponse);
+      _audioSampleStream = audioDataStreamResponse(frame!.dataResponse);
 
       String prevText = '';
 
@@ -169,16 +209,17 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
             config: recognitionConfig,
             streamingFeatures: StreamingRecognitionFeatures(interimResults: true)
         ),
-        audioSampleStream!,
+        _audioSampleStream!,
         restartTime: const Duration(seconds: 60),
         transitionBufferTime: const Duration(seconds: 2)
       );
 
-      // TODO any value in keeping a handle on the StreamSubscription?
-      // we stop the recognition stream by stopping the audio stream, not by canceling the subscription
-      speechToText.endlessStream.listen((data) async {
-        // TODO remove? Too much detail?
-        _log.fine('Result: $data');
+      // note: we stop the previous recognition stream by stopping its audio stream first
+      // but also manage stream subscription here
+      _recognitionSubs?.cancel();
+      _recognitionSubs = speechToText.endlessStream.listen((data) async {
+        // log the streamed results
+        _log.fine(() => 'Result: $data');
 
         // just use the first alternative for now (consider other language alternatives if provided?)
         // and concatenate all the pieces (regardless of stability or whether this result(s) is final or not)
@@ -188,22 +229,22 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
             .join();
 
         if (_log.isLoggable(Level.FINE)) {
-          _log.fine('Recognized text: $currentText');
+          _log.fine(() => 'Recognized text: $currentText');
         }
 
         // if the current text is different from the previous text, send an update to Frame
         // (there are many responses that split in different places, have different stability values,
-        // but concatenate to the same string in our case)
-        if (currentText != prevText) { // TODO (and Latin script?)
-          // Frame can display N lines of plain text, so work out the text wrapping then send
-          // the bottom N lines to the display
-          // TODO TextUtil wrap, sublist, join
-          // TODO change wrapText to return a List of Strings
-          String wrappedText = TextUtils.wrapText(currentText, 640, 4);
+        // but concatenate to the same string in our case, so don't update Frame display)
+        if (currentText != prevText) { // TODO (&& Latin-only script?)
+          // Frame can display 6 lines of plain text, so work out the text wrapping
+          List<String> wrappedText = TextUtils.wrapTextSplit(currentText, 640, 4);
 
-          // TODO join the last N lines with '\n' for display
+          // then send the bottom 6 lines joined with newlines as a single string
+          // (they get split and drawn on the Lua side)
+          String displayText = wrappedText.sublist(wrappedText.length <= 6 ? 0 : wrappedText.length - 6)
+                                  .join('\n');
 
-          await frame!.sendMessage(TxPlainText(msgCode: 0x0b, text: wrappedText));
+          await frame!.sendMessage(TxPlainText(msgCode: 0x0b, text: displayText));
         }
 
         // When a complete utterance is detected, isFinal is set and we can append
@@ -230,29 +271,35 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
 
         }
 
+      }, onError: (error) {
+        _log.warning('Error occurred in endless stream: $error');
+        setState(() {
+          currentState = ApplicationState.ready;
+        });
       }, onDone: () {
         // audio stream was stopped so Recognizer stream stopped
+        _log.info('Endless Stream is done');
+        _recognitionSubs?.cancel();
+        speechToText.dispose();
         setState(() {
           currentState = ApplicationState.ready;
         });
       });
 
     } catch (e) {
-      _log.fine('Error executing application logic: $e');
+      _log.fine(() => 'Error executing application logic: $e');
     }
   }
 
   /// When we receive a tap to stop transcribing, cancel the audio streaming from Frame,
-  /// close the audio stream (and the streaming recognizer connection should stop too)
+  /// which will send "final chunk" message, which will close the audio stream
+  /// and the streaming recognizer stream will stop because its audio stream stopped
   Future<void> _stopRecognition() async {
     // tell Frame to stop streaming audio
     await frame!.sendMessage(TxCode(msgCode: 0x31));
 
-    // TODO is this enough to close the stream? I don't think so.
-    // Also do stream.close(), maybe drain() it too to stop it right now. Can I do that from this thread?
-    await audioSampleStream!.drain();
-
-    // currentState gets set to ApplicationState.ready in listen's onDone()
+    // TODO do I need to wait a short time? Hopefully not
+    //await Future.delayed(const Duration(milliseconds: 1500));
   }
 
   void _scrollToBottom() {
@@ -260,6 +307,13 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
       if (_transcriptController.hasClients) {
         _transcriptController.animateTo(
           _transcriptController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+      }
+      if (_partialResultController.hasClients) {
+        _partialResultController.animateTo(
+          _partialResultController.position.maxScrollExtent,
           duration: const Duration(milliseconds: 300),
           curve: Curves.easeOut,
         );
@@ -286,6 +340,7 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
                 TextField(controller: _serviceAccountJsonController, obscureText: true, decoration: const InputDecoration(hintText: 'Enter Service Account JSON'),),
                 TextField(controller: _projectIdController, obscureText: false, decoration: const InputDecoration(hintText: 'Enter Project Id'),),
                 TextField(controller: _languageCodeController, obscureText: false, decoration: const InputDecoration(hintText: 'Enter Language Code e.g. en-US'),),
+                if (_errorMsg != null) Text(_errorMsg!, style: const TextStyle(backgroundColor: Colors.red)),
                 ElevatedButton(onPressed: _savePrefs, child: const Text('Save')),
 
                 Expanded(child: Column(
@@ -306,7 +361,10 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
                     ),
                     const Divider(),
                     Align(alignment: Alignment.centerLeft,
-                      child: Text('Partial: $_partialResult', style: _textStyle)
+                      child: SingleChildScrollView(
+                        controller: _partialResultController,
+                        child: Text(_partialResult, style: _textStyle)
+                      )
                     ),
                   ],
                 )),
