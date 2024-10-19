@@ -29,7 +29,7 @@ class MainApp extends StatefulWidget {
 class MainAppState extends State<MainApp> with SimpleFrameAppState {
 
   MainAppState() {
-    // TODO temporarily filter logging
+    // filter logging
     hierarchicalLoggingEnabled = true;
     Logger.root.level = Level.INFO;
     Logger('Bluetooth').level = Level.OFF;
@@ -297,9 +297,6 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
   Future<void> _stopRecognition() async {
     // tell Frame to stop streaming audio
     await frame!.sendMessage(TxCode(msgCode: 0x31));
-
-    // TODO do I need to wait a short time? Hopefully not
-    //await Future.delayed(const Duration(milliseconds: 1500));
   }
 
   void _scrollToBottom() {
