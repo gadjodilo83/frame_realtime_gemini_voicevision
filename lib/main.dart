@@ -268,7 +268,7 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
           setState(() {
             _partialResult = currentText;
           });
-
+          _scrollToBottom();
         }
 
       }, onError: (error) {
@@ -346,8 +346,7 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
                 Expanded(child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    SizedBox(
-                      height: 200,
+                    Expanded(
                       child: ListView.builder(
                         controller: _transcriptController, // Auto-scroll controller
                         itemCount: _transcript.length,
@@ -360,11 +359,16 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
                       ),
                     ),
                     const Divider(),
-                    Align(alignment: Alignment.centerLeft,
-                      child: SingleChildScrollView(
-                        controller: _partialResultController,
-                        child: Text(_partialResult, style: _textStyle)
-                      )
+                    ConstrainedBox(
+                      constraints: BoxConstraints(
+                        maxHeight: _textStyle.fontSize! * 5
+                      ),
+                      child: Align(alignment: Alignment.centerLeft,
+                        child: SingleChildScrollView(
+                          controller: _partialResultController,
+                          child: Text(_partialResult, style: _textStyle)
+                        )
+                      ),
                     ),
                   ],
                 )),
