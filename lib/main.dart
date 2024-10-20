@@ -6,6 +6,7 @@ import 'package:google_speech/endless_streaming_service_v2.dart';
 import 'package:google_speech/generated/google/cloud/speech/v2/cloud_speech.pb.dart';
 import 'package:google_speech/google_speech.dart';
 import 'package:logging/logging.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:simple_frame_app/audio_data_response.dart';
 import 'package:simple_frame_app/tap_data_response.dart';
@@ -373,7 +374,24 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
             ),
           ),
         ),
-        floatingActionButton: getFloatingActionButtonWidget(const Icon(Icons.mic), const Icon(Icons.mic_off)),
+        floatingActionButton: Stack(
+          children: [
+            if (_transcript.isNotEmpty) Positioned(
+              bottom: 90,
+              right: 20,
+              child: FloatingActionButton(
+                onPressed: () {
+                  Share.share(_transcript.join('\n'));
+                },
+                child: const Icon(Icons.share)),
+            ),
+            Positioned(
+              bottom: 20,
+              right: 20,
+              child: getFloatingActionButtonWidget(const Icon(Icons.mic), const Icon(Icons.mic_off)) ?? Container(),
+            ),
+          ]
+        ),
         persistentFooterButtons: getFooterButtonsWidget(),
       ),
     );
