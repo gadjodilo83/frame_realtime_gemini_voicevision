@@ -172,7 +172,7 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
     _recognitionSubs?.cancel();
 
     // tell the Frame to stop streaming audio (regardless of if we are currently)
-    await frame!.sendMessage(TxCode(msgCode: 0x31));
+    await frame!.sendMessage(TxCode(msgCode: 0x30, value: 0));
 
     // let Frame know to stop sending taps too
     await frame!.sendMessage(TxCode(msgCode: 0x10, value: 0));
@@ -196,7 +196,7 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
     final recognitionConfig = _getRecognitionConfig();
 
     // tell Frame to start streaming audio
-    await frame!.sendMessage(TxCode(msgCode: 0x30));
+    await frame!.sendMessage(TxCode(msgCode: 0x30, value: 1));
 
     try {
       // the audio stream from Frame, which needs to be closed() to stop the streaming recognition
@@ -296,7 +296,7 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
   /// and the streaming recognizer stream will stop because its audio stream stopped
   Future<void> _stopRecognition() async {
     // tell Frame to stop streaming audio
-    await frame!.sendMessage(TxCode(msgCode: 0x31));
+    await frame!.sendMessage(TxCode(msgCode: 0x30, value: 0));
   }
 
   void _scrollToBottom() {

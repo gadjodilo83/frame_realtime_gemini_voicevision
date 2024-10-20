@@ -5,14 +5,12 @@ local plain_text = require('plain_text.min')
 
 -- Phone to Frame flags
 TEXT_MSG = 0x0b
-START_AUDIO_MSG = 0x30
-STOP_AUDIO_MSG = 0x31
+AUDIO_SUBS_MSG = 0x30
 TAP_SUBS_MSG = 0x10
 
 -- register the message parser so it's automatically called when matching data comes in
 data.parsers[TEXT_MSG] = plain_text.parse_plain_text
-data.parsers[START_AUDIO_MSG] = code.parse_code
-data.parsers[STOP_AUDIO_MSG] = code.parse_code
+data.parsers[AUDIO_SUBS_MSG] = code.parse_code
 data.parsers[TAP_SUBS_MSG] = code.parse_code
 
 -- Frame to Phone flags
@@ -73,23 +71,24 @@ function app_loop()
                         data.app_data[TAP_SUBS_MSG] = nil
                     end
 
-                    if (data.app_data[START_AUDIO_MSG] ~= nil) then
-                        audio_data = ''
-                        pcall(frame.microphone.start, {sample_rate=8000, bit_depth=16})
-                        streaming = true
-                        frame.display.text("Streaming Audio", 1, 1)
-                        frame.display.show()
+                    if (data.app_data[AUDIO_SUBS_MSG] ~= nil) then
 
-                        data.app_data[START_AUDIO_MSG] = nil
-                    end
+                        if data.app_data[AUDIO_SUBS_MSG].value == 1 then
+                            -- start subscription to audio
+                            audio_data = ''
+                            pcall(frame.microphone.start, {sample_rate=8000, bit_depth=16})
+                            streaming = true
+                            frame.display.text("Streaming Audio", 1, 1)
+                            frame.display.show()
+                        else
+                            -- cancel subscription to audio
+                            pcall(frame.microphone.stop)
+                            -- clear the display
+                            frame.display.text(" ", 1, 1)
+                            frame.display.show()
+                        end
 
-                    if (data.app_data[STOP_AUDIO_MSG] ~= nil) then
-                        pcall(frame.microphone.stop)
-                        -- clear the display
-                        frame.display.text(" ", 1, 1)
-                        frame.display.show()
-
-                        data.app_data[STOP_AUDIO_MSG] = nil
+                        data.app_data[AUDIO_SUBS_MSG] = nil
                     end
                 end
             end
@@ -105,8 +104,8 @@ function app_loop()
         end
 
         -- send any pending audio data back
-		-- Streams until STOP_AUDIO_MSG is sent from phone
-		-- (prioritize the reading and sending about 20x compared to checking for other events e.g. STOP_AUDIO_MSG)
+		-- Streams until AUDIO_SUBS_MSG (with value 0) is sent from phone
+		-- (prioritize the reading and sending about 20x compared to checking for other events e.g. AUDIO_SUBS_MSG/0)
         if streaming then
             for i=1,20 do
 				audio_data = frame.microphone.read(mtu)
