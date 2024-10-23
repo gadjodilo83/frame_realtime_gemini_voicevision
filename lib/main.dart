@@ -8,8 +8,8 @@ import 'package:google_speech/google_speech.dart';
 import 'package:logging/logging.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:simple_frame_app/audio_data_response.dart';
-import 'package:simple_frame_app/tap_data_response.dart';
+import 'package:simple_frame_app/rx/audio.dart';
+import 'package:simple_frame_app/rx/tap.dart';
 import 'package:simple_frame_app/tx/code.dart';
 import 'package:simple_frame_app/tx/plain_text.dart';
 import 'package:simple_frame_app/text_utils.dart';
@@ -34,8 +34,8 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
     hierarchicalLoggingEnabled = true;
     Logger.root.level = Level.INFO;
     Logger('Bluetooth').level = Level.OFF;
-    Logger('AudioDR').level = Level.FINE;
-    Logger('TapDR').level = Level.FINE;
+    Logger('RxAudio').level = Level.FINE;
+    Logger('RxTap').level = Level.FINE;
 
     Logger.root.onRecord.listen((record) {
       debugPrint('${record.level.name}: [${record.loggerName}] ${record.time}: ${record.message}');
@@ -122,7 +122,7 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
     try {
       // listen for double taps to start/stop transcribing
       _tapSubs?.cancel();
-      _tapSubs = tapDataResponse(frame!.dataResponse, const Duration(milliseconds: 300))
+      _tapSubs = RxTap().attach(frame!.dataResponse)
         .listen((taps) async {
           if (taps >= 2) {
             if (!_streaming) {
@@ -200,8 +200,10 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
     await frame!.sendMessage(TxCode(msgCode: 0x30, value: 1));
 
     try {
+      // TODO put this object where I can call on it later to detach()
+      var rxAudio = RxAudio(streaming: true);
       // the audio stream from Frame, which needs to be closed() to stop the streaming recognition
-      _audioSampleStream = audioDataStreamResponse(frame!.dataResponse);
+      _audioSampleStream = rxAudio.attach(frame!.dataResponse);
 
       String prevText = '';
 
@@ -238,7 +240,7 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
         // but concatenate to the same string in our case, so don't update Frame display)
         if (currentText != prevText) { // TODO (&& Latin-only script?)
           // Frame can display 6 lines of plain text, so work out the text wrapping
-          List<String> wrappedText = TextUtils.wrapTextSplit(currentText, 640, 4);
+          List<String> wrappedText = TextUtils.wrapText(currentText, 640, 4);
 
           // then send the bottom 6 lines joined with newlines as a single string
           // (they get split and drawn on the Lua side)
@@ -298,6 +300,9 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
   Future<void> _stopRecognition() async {
     // tell Frame to stop streaming audio
     await frame!.sendMessage(TxCode(msgCode: 0x30, value: 0));
+
+    // TODO we should also be able to send
+    // rxAudio.detach() to close the controller controlling our audio stream
   }
 
   void _scrollToBottom() {
