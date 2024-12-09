@@ -340,7 +340,7 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                TextField(controller: _serviceAccountJsonController, obscureText: true, decoration: const InputDecoration(hintText: 'Enter Service Account JSON'),),
+                TextField(controller: _serviceAccountJsonController, obscureText: false, decoration: const InputDecoration(hintText: 'Enter Service Account JSON'),),
                 TextField(controller: _projectIdController, obscureText: false, decoration: const InputDecoration(hintText: 'Enter Project Id'),),
                 TextField(controller: _languageCodeController, obscureText: false, decoration: const InputDecoration(hintText: 'Enter Language Code e.g. en-US'),),
                 if (_errorMsg != null) Text(_errorMsg!, style: const TextStyle(backgroundColor: Colors.red)),
