@@ -67,7 +67,10 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
   void initState() {
     super.initState();
 
-    _loadPrefs();
+    // load up the saved text field data
+    _loadPrefs()
+      // then kick off the connection to Frame and start the app if possible
+      .then((_) => tryScanAndConnectAndStart(andRun: true));
   }
 
   Future<void> _loadPrefs() async {
