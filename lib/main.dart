@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:google_speech/endless_streaming_service_v2.dart';
 import 'package:google_speech/generated/google/cloud/speech/v2/cloud_speech.pb.dart';
 import 'package:google_speech/google_speech.dart';
@@ -14,8 +15,14 @@ import 'package:simple_frame_app/tx/code.dart';
 import 'package:simple_frame_app/tx/plain_text.dart';
 import 'package:simple_frame_app/text_utils.dart';
 import 'package:simple_frame_app/simple_frame_app.dart';
+import 'foreground_service.dart';
 
-void main() => runApp(const MainApp());
+void main() {
+  // Set up Android foreground service
+  initializeForegroundService();
+
+  runApp(const MainApp());
+}
 
 final _log = Logger("MainApp");
 
@@ -329,79 +336,82 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Transcribe - Google Cloud Speech',
-      theme: ThemeData.dark(),
-      home: Scaffold(
-        appBar: AppBar(
-          title: const Text('Transcribe - Google Cloud Speech'),
-          actions: [getBatteryWidget()]
-        ),
-        body: Center(
-          child: Container(
-            margin: const EdgeInsets.symmetric(horizontal: 16),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                TextField(controller: _serviceAccountJsonController, obscureText: false, decoration: const InputDecoration(hintText: 'Enter Service Account JSON'),),
-                TextField(controller: _projectIdController, obscureText: false, decoration: const InputDecoration(hintText: 'Enter Project Id'),),
-                TextField(controller: _languageCodeController, obscureText: false, decoration: const InputDecoration(hintText: 'Enter Language Code e.g. en-US'),),
-                if (_errorMsg != null) Text(_errorMsg!, style: const TextStyle(backgroundColor: Colors.red)),
-                ElevatedButton(onPressed: _savePrefs, child: const Text('Save')),
+    startForegroundService();
+    return WithForegroundTask(
+      child: MaterialApp(
+        title: 'Transcribe - Google Cloud Speech',
+        theme: ThemeData.dark(),
+        home: Scaffold(
+          appBar: AppBar(
+            title: const Text('Transcribe - Google Cloud Speech'),
+            actions: [getBatteryWidget()]
+          ),
+          body: Center(
+            child: Container(
+              margin: const EdgeInsets.symmetric(horizontal: 16),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  TextField(controller: _serviceAccountJsonController, obscureText: false, decoration: const InputDecoration(hintText: 'Enter Service Account JSON'),),
+                  TextField(controller: _projectIdController, obscureText: false, decoration: const InputDecoration(hintText: 'Enter Project Id'),),
+                  TextField(controller: _languageCodeController, obscureText: false, decoration: const InputDecoration(hintText: 'Enter Language Code e.g. en-US'),),
+                  if (_errorMsg != null) Text(_errorMsg!, style: const TextStyle(backgroundColor: Colors.red)),
+                  ElevatedButton(onPressed: _savePrefs, child: const Text('Save')),
 
-                Expanded(child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Expanded(
-                      child: ListView.builder(
-                        controller: _transcriptController, // Auto-scroll controller
-                        itemCount: _transcript.length,
-                        itemBuilder: (context, index) {
-                          return Text(
-                            _transcript[index],
-                            style: _textStyle,
-                          );
-                        },
+                  Expanded(child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Expanded(
+                        child: ListView.builder(
+                          controller: _transcriptController, // Auto-scroll controller
+                          itemCount: _transcript.length,
+                          itemBuilder: (context, index) {
+                            return Text(
+                              _transcript[index],
+                              style: _textStyle,
+                            );
+                          },
+                        ),
                       ),
-                    ),
-                    const Divider(),
-                    ConstrainedBox(
-                      constraints: BoxConstraints(
-                        maxHeight: _textStyle.fontSize! * 5
+                      const Divider(),
+                      ConstrainedBox(
+                        constraints: BoxConstraints(
+                          maxHeight: _textStyle.fontSize! * 5
+                        ),
+                        child: Align(alignment: Alignment.centerLeft,
+                          child: SingleChildScrollView(
+                            controller: _partialResultController,
+                            child: Text(_partialResult, style: _textStyle)
+                          )
+                        ),
                       ),
-                      child: Align(alignment: Alignment.centerLeft,
-                        child: SingleChildScrollView(
-                          controller: _partialResultController,
-                          child: Text(_partialResult, style: _textStyle)
-                        )
-                      ),
-                    ),
-                  ],
-                )),
-              ],
+                    ],
+                  )),
+                ],
+              ),
             ),
           ),
+          floatingActionButton: Stack(
+            children: [
+              if (_transcript.isNotEmpty) Positioned(
+                bottom: 90,
+                right: 20,
+                child: FloatingActionButton(
+                  onPressed: () {
+                    Share.share(_transcript.join('\n'));
+                  },
+                  child: const Icon(Icons.share)),
+              ),
+              Positioned(
+                bottom: 20,
+                right: 20,
+                child: getFloatingActionButtonWidget(const Icon(Icons.mic), const Icon(Icons.mic_off)) ?? Container(),
+              ),
+            ]
+          ),
+          persistentFooterButtons: getFooterButtonsWidget(),
         ),
-        floatingActionButton: Stack(
-          children: [
-            if (_transcript.isNotEmpty) Positioned(
-              bottom: 90,
-              right: 20,
-              child: FloatingActionButton(
-                onPressed: () {
-                  Share.share(_transcript.join('\n'));
-                },
-                child: const Icon(Icons.share)),
-            ),
-            Positioned(
-              bottom: 20,
-              right: 20,
-              child: getFloatingActionButtonWidget(const Icon(Icons.mic), const Icon(Icons.mic_off)) ?? Container(),
-            ),
-          ]
-        ),
-        persistentFooterButtons: getFooterButtonsWidget(),
-      ),
+      )
     );
   }
 }

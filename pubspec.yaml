@@ -14,6 +14,7 @@ dependencies:
   simple_frame_app: ^2.0.0
   shared_preferences: ^2.3.2
   share_plus: ^10.1.0
+  flutter_foreground_task: ^6.5.0
 
 dev_dependencies:
   flutter_test:
