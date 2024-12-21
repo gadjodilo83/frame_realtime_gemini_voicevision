@@ -339,11 +339,11 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
     startForegroundService();
     return WithForegroundTask(
       child: MaterialApp(
-        title: 'Transcribe - Google Cloud Speech',
+        title: 'Frame Realtime OpenAI Voice',
         theme: ThemeData.dark(),
         home: Scaffold(
           appBar: AppBar(
-            title: const Text('Transcribe - Google Cloud Speech'),
+            title: const Text('Frame Realtime OpenAI Voice'),
             actions: [getBatteryWidget()]
           ),
           body: Center(
