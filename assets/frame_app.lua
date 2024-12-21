@@ -78,7 +78,7 @@ function app_loop()
                             audio_data = ''
                             pcall(frame.microphone.start, {sample_rate=8000, bit_depth=16})
                             streaming = true
-                            frame.display.text("Streaming Audio", 1, 1)
+                            frame.display.text("\u{F0010}", 1, 1)
                             frame.display.show()
                         else
                             -- cancel subscription to audio
