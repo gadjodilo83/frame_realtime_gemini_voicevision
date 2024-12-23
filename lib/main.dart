@@ -42,8 +42,8 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
   WebSocketChannel? _channel;
   StreamSubscription<dynamic>? _channelSubs;
   bool _conversing = false;
-  // TODO add {"generation_config": {"response_modalities": ["AUDIO"]}} alongside model?
-  final Map<String, dynamic> _setupMap = {'setup': { 'model': 'models/gemini-2.0-flash-exp', 'generation_config': {'response_modalities': ['text', 'audio']}}};
+  // TODO interestingly, 'response_modalities' seems to allow only "text", "audio", "image" - not a list. Audio only is fine for us
+  final Map<String, dynamic> _setupMap = {'setup': { 'model': 'models/gemini-2.0-flash-exp', 'generation_config': {'response_modalities': 'audio'}}};
   final Map<String, dynamic> _realtimeInputMap = {'realtimeInput': { 'mediaChunks': [{'mimeType': 'audio/pcm;rate=16000', 'data': ''}]}};
 
   // raw sound player
@@ -212,7 +212,11 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
     await _channel?.sink.close();
     _channel = WebSocketChannel.connect(Uri.parse('wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${_apiKeyController.text}'));
 
-    // set up the model/ TODO modality?
+    // connection doesn't complete immediately, wait until it's ready
+    // TODO check what happens if API key is bad, host is bad etc, how long are the timeouts?
+    await _channel!.ready;
+
+    // set up the config for the model/modality
     _channel!.sink.add(jsonEncode(_setupMap));
 
     // set up stream handler for channel to handle events
@@ -220,9 +224,6 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
 
     // Gemini side is set up
     _conversing = true;
-
-    // tell Frame to start streaming audio
-    await frame!.sendMessage(TxCode(msgCode: 0x30, value: 1));
 
     try {
       // the audio stream from Frame, which needs to be closed() to stop the streaming
@@ -232,6 +233,9 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
       // but then can't the client buffer it a bit maybe? I just append to the buffer but it seems to send them out as soon as it gets them
       _audioSubs = _audioSampleStream!.listen(_handleFrameAudio);
 
+      // tell Frame to start streaming audio
+      await frame!.sendMessage(TxCode(msgCode: 0x30, value: 1));
+
     } catch (e) {
       _log.warning(() => 'Error executing application logic: $e');
     }
@@ -240,7 +244,6 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
   /// handle the server events that come through the websocket
   FutureOr<void> _handleGeminiEvent(dynamic eventJson) async {
     String eventString = utf8.decode(eventJson);
-    _log.info(eventString);
 
     // parse the json
     var event = jsonDecode(eventString);
@@ -255,6 +258,7 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
     }
     else {
       // some other kind of event
+      _log.info(eventString);
       _appendEvent(eventString);
     }
 
@@ -324,6 +328,8 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
 
     // rxAudio.detach() to close/flush the controller controlling our audio stream
     _rxAudio.detach();
+
+    _appendEvent('Ending conversation');
   }
 
   /// puts some text into our scrolling log in the UI
