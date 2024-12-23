@@ -1,5 +1,5 @@
-name: frame_realtime_openai_voice
-description: "Connects to Frame, streams audio from the Frame microphone in a WebRTC conversation with the OpenAI Realtime API"
+name: frame_realtime_gemini_voicevision
+description: "Connects to Frame, streams audio from the Frame microphone and photos from its camera in a websockets conversation with the Gemini Realtime API"
 publish_to: 'none'
 version: 0.1.0
 
@@ -10,7 +10,7 @@ dependencies:
   flutter:
     sdk: flutter
   logging: ^1.2.0
-  simple_frame_app: ^2.0.0
+  simple_frame_app: ^2.0.3
   shared_preferences: ^2.3.2
   share_plus: ^10.1.0
   flutter_foreground_task: ^6.5.0
