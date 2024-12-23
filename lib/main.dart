@@ -83,7 +83,7 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
     // use a small buffer to allow short clips to be played - raw_sound won't play clips smaller than bufferSize bytes
     // gemini pcm16 is apparently mono 24kHz
     // kick off asynchronously
-    _player.initialize(bufferSize: 1024, nChannels: 1, sampleRate: 24000, pcmType: RawSoundPCMType.PCMI16);
+    _player.initialize(bufferSize: 32768, nChannels: 1, sampleRate: 24000, pcmType: RawSoundPCMType.PCMI16);
 
     // load up the saved text field data
     _loadPrefs()
@@ -229,8 +229,7 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
       // the audio stream from Frame, which needs to be closed() to stop the streaming
       _audioSampleStream = _rxAudio.attach(frame!.dataResponse);
       _audioSubs?.cancel();
-      // TODO consider buffering if 128 bytes of PCM16 / 64 bytes of ulaw is too little
-      // but then can't the client buffer it a bit maybe? I just append to the buffer but it seems to send them out as soon as it gets them
+      // TODO consider buffering if 128 bytes of PCM16 / 64 bytes of ulaw is too little (e.g. if measured in requests not tokens)
       _audioSubs = _audioSampleStream!.listen(_handleFrameAudio);
 
       // tell Frame to start streaming audio
@@ -264,7 +263,7 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
           // TODO process interruption
           _stopAudio();
           // TODO communicate interruption playback point back to server?
-          _appendEvent('Interruption detected');
+          _appendEvent('---Interruption---');
         }
         else if (serverContent['turnComplete'] != null) {
           // server has finished sending
@@ -280,18 +279,6 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
         _appendEvent(eventString);
       }
     }
-
-    // TODO work out what to do with the message
-    // serverContent / modelTurn / parts[] / inlineData / data / {base64 decode audio data}
-
-    // switch (event) {
-    //   // {"setupComplete": {}}
-    //   //TODO elif 'interrupted' in msg.get('serverContent', {}):
-    //   //TODO elif 'turnComplete' in msg.get('serverContent', {}):
-    //   default:
-    //     //TODO if msg != {'serverContent': {}}:
-    //     //          print(f'unhandled message: {msg}')
-    // }
   }
 
   /// pass the audio from Frame (upsampled) to the API
