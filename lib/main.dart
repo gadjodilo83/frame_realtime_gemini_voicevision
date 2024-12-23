@@ -1,9 +1,13 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
+import 'package:frame_realtime_gemini_voicevision/audio_data_extractor.dart';
+import 'package:frame_realtime_gemini_voicevision/audio_upsampler.dart';
 import 'package:logging/logging.dart';
+import 'package:raw_sound/raw_sound_player.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:simple_frame_app/rx/audio.dart';
@@ -11,6 +15,7 @@ import 'package:simple_frame_app/rx/tap.dart';
 import 'package:simple_frame_app/tx/code.dart';
 import 'package:simple_frame_app/tx/plain_text.dart';
 import 'package:simple_frame_app/simple_frame_app.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
 import 'foreground_service.dart';
 
 void main() {
@@ -32,10 +37,36 @@ class MainApp extends StatefulWidget {
 /// SimpleFrameAppState mixin helps to manage the lifecycle of the Frame connection outside of this file
 class MainAppState extends State<MainApp> with SimpleFrameAppState {
 
+  /// realtime voice application members
+  final TextEditingController _apiKeyController = TextEditingController();
+  WebSocketChannel? _channel;
+  StreamSubscription<dynamic>? _channelSubs;
+  bool _conversing = false;
+  // TODO add {"generation_config": {"response_modalities": ["AUDIO"]}} alongside model?
+  final Map<String, dynamic> _setupMap = {'setup': { 'model': 'models/gemini-2.0-flash-exp', 'generation_config': {'response_modalities': ['text', 'audio']}}};
+  final Map<String, dynamic> _realtimeInputMap = {'realtimeInput': { 'mediaChunks': [{'mimeType': 'audio/pcm;rate=16000', 'data': ''}]}};
+
+  // raw sound player
+  final _player = RawSoundPlayer();
+
+  // tap subscription and audio streaming status
+  StreamSubscription<int>? _tapSubs;
+  bool _streaming = false;
+  // 8kHz 16-bit linear PCM from Frame mic (only the high 10 bits iirc)
+  final RxAudio _rxAudio = RxAudio(streaming: true);
+  StreamSubscription<Uint8List>? _audioSubs;
+  Stream<Uint8List>? _audioSampleStream;
+
+  // UI display
+  final List<String> _eventLog = List.empty(growable: true);
+  final ScrollController _eventLogController = ScrollController();
+  static const _textStyle = TextStyle(fontSize: 20);
+  String? _errorMsg;
+
   MainAppState() {
     // filter logging
     hierarchicalLoggingEnabled = true;
-    Logger.root.level = Level.INFO;
+    Logger.root.level = Level.FINE;
     Logger('Bluetooth').level = Level.OFF;
     Logger('RxAudio').level = Level.FINE;
     Logger('RxTap').level = Level.FINE;
@@ -45,30 +76,27 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
     });
   }
 
-  /// realtime voice application members
-  final TextEditingController _apiKeyController = TextEditingController();
-  // 16-bit linear PCM from Frame mic
-  Stream<Uint8List>? _audioSampleStream;
-  static const _sampleRate = 8000;
-
-  // tap subscription and audio streaming status
-  StreamSubscription<int>? _tapSubs;
-  bool _streaming = false;
-
-  // transcription UI display
-  final List<String> _eventLog = List.empty(growable: true);
-  final ScrollController _eventLogController = ScrollController();
-  static const _textStyle = TextStyle(fontSize: 24);
-  String? _errorMsg;
-
   @override
   void initState() {
     super.initState();
+
+    // use a small buffer to allow short clips to be played - raw_sound won't play clips smaller than bufferSize bytes
+    // gemini pcm16 is apparently mono 24kHz
+    // kick off asynchronously
+    _player.initialize(bufferSize: 1024, nChannels: 1, sampleRate: 24000, pcmType: RawSoundPCMType.PCMI16);
 
     // load up the saved text field data
     _loadPrefs()
       // then kick off the connection to Frame and start the app if possible
       .then((_) => tryScanAndConnectAndStart(andRun: true));
+  }
+
+  @override
+  void dispose() async {
+    await _channel?.sink.close();
+    await _player.release();
+    await _audioSubs?.cancel();
+    super.dispose();
   }
 
   Future<void> _loadPrefs() async {
@@ -83,7 +111,7 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
     await prefs.setString('api_key', _apiKeyController.text);
   }
 
-  /// This application uses OpenAI's realtime API over WebRTC.
+  /// This application uses Gemini's realtime API over WebSockets.
   /// It has a running main loop in this function and also on the Frame (frame_app.lua)
   @override
   Future<void> run() async {
@@ -91,7 +119,7 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
     _errorMsg = null;
     if (_apiKeyController.text.isEmpty) {
       setState(() {
-        _errorMsg = 'Error: Set value for OpenAI API Key';
+        _errorMsg = 'Error: Set value for Gemini API Key';
       });
 
       return;
@@ -108,18 +136,24 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
       _tapSubs = RxTap().attach(frame!.dataResponse)
         .listen((taps) async {
           if (taps >= 2) {
-            if (!_streaming) {
+            if (!_streaming && !_conversing) {
               _streaming = true;
+              await frame!.sendMessage(TxPlainText(msgCode: 0x0b, text: 'Connecting...'));
+
+              await _startConversation();
+
               // show microphone emoji
               await frame!.sendMessage(TxPlainText(msgCode: 0x0b, text: '\u{F0010}'));
-              await _startConversation();
             }
-            else {
+            else if (_streaming && _conversing) {
               await _stopConversation();
               _streaming = false;
 
               // prompt the user to begin tapping
               await frame!.sendMessage(TxPlainText(msgCode: 0x0b, text: 'Double-Tap to resume!'));
+            }
+            else {
+              _log.severe('double-tap while streaming and conversing status is not aligned');
             }
           }
           // ignore spurious 1-taps
@@ -152,7 +186,8 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
     // cancel the subscription for taps
     _tapSubs?.cancel();
 
-    // TODO cancel the WebRTC conversation if it's running
+    // cancel the conversation if it's running
+    if (_conversing) _stopConversation();
 
     // tell the Frame to stop streaming audio (regardless of if we are currently)
     await frame!.sendMessage(TxCode(msgCode: 0x30, value: 0));
@@ -171,37 +206,132 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
   /// When we receive a tap to start the conversation, we need to start
   /// audio streaming on Frame and start the WebRTC conversation with OpenAI
   Future<void> _startConversation() async {
-    //_apiKeyController.text
+    _appendEvent('Starting conversation');
+
+    // get a fresh websocket channel each time we start a conversation for now
+    await _channel?.sink.close();
+    _channel = WebSocketChannel.connect(Uri.parse('wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${_apiKeyController.text}'));
+
+    // set up the model/ TODO modality?
+    _channel!.sink.add(jsonEncode(_setupMap));
+
+    // set up stream handler for channel to handle events
+    _channelSubs = _channel!.stream.listen(_handleGeminiEvent);
+
+    // Gemini side is set up
+    _conversing = true;
 
     // tell Frame to start streaming audio
     await frame!.sendMessage(TxCode(msgCode: 0x30, value: 1));
 
     try {
-      // TODO put this object where I can call on it later to detach()
-      var rxAudio = RxAudio(streaming: true);
       // the audio stream from Frame, which needs to be closed() to stop the streaming
-      _audioSampleStream = rxAudio.attach(frame!.dataResponse);
-
-
-      // setState(() {
-      //   _transcript.add(event);
-      // });
-      // _scrollToBottom();
+      _audioSampleStream = _rxAudio.attach(frame!.dataResponse);
+      _audioSubs?.cancel();
+      // TODO consider buffering if 128 bytes of PCM16 / 64 bytes of ulaw is too little
+      // but then can't the client buffer it a bit maybe? I just append to the buffer but it seems to send them out as soon as it gets them
+      _audioSubs = _audioSampleStream!.listen(_handleFrameAudio);
 
     } catch (e) {
       _log.warning(() => 'Error executing application logic: $e');
     }
   }
 
+  /// handle the server events that come through the websocket
+  FutureOr<void> _handleGeminiEvent(dynamic eventJson) async {
+    String eventString = utf8.decode(eventJson);
+    _log.info(eventString);
+
+    // parse the json
+    var event = jsonDecode(eventString);
+
+    // try audio message types first
+    var audioData = AudioDataExtractor.extractAudioData(event);
+
+    if (audioData != null) {
+      for (var chunk in audioData) {
+        await _playAudio(chunk);
+      }
+    }
+    else {
+      // some other kind of event
+      _appendEvent(eventString);
+    }
+
+    // TODO work out what to do with the message
+    // serverContent / modelTurn / parts[] / inlineData / data / {base64 decode audio data}
+
+    // switch (event) {
+    //   // {"setupComplete": {}}
+    //   //TODO elif 'interrupted' in msg.get('serverContent', {}):
+    //   //TODO elif 'turnComplete' in msg.get('serverContent', {}):
+    //   default:
+    //     //TODO if msg != {'serverContent': {}}:
+    //     //          print(f'unhandled message: {msg}')
+    // }
+  }
+
+  /// pass the audio from Frame (upsampled) to the API
+  void _handleFrameAudio(Uint8List pcm16x8) {
+    if (_conversing) {
+      // upsample PCM16 from 8kHz to 16kHz for Gemini
+      var pcm16x16 = AudioUpsampler.upsample8kTo16k(pcm16x8);
+
+      // base64 encode
+      var base64audio = base64Encode(pcm16x16);
+
+      // set the data into the realtime input map before serializing
+      // TODO can't I just cache the last little map and set it there at least?
+      _realtimeInputMap['realtimeInput']['mediaChunks'][0]['data'] = base64audio;
+
+      // send audio data to websocket
+      _channel!.sink.add(jsonEncode(_realtimeInputMap));
+    }
+  }
+
+  /// Play the audio from the selected recording
+  Future<void> _playAudio(Uint8List audioBytes) async {
+    if (!_player.isPlaying) {
+      await _player.play();
+    }
+
+    if (_player.isPlaying) {
+      await _player.feed(Uint8List.fromList(audioBytes));
+    }
+  }
+
+  /// Cancel the playing of the selected recording
+  Future<void> _stopAudio() async {
+    //if (_player.isPlaying) {
+      await _player.stop();
+    //}
+  }
+
   /// When we receive a tap to stop the conversation, cancel the audio streaming from Frame,
   /// which will send "final chunk" message, which will close the audio stream
-  /// and the WebRTC conversation needs to stop too
+  /// and the Gemini conversation needs to stop too
   Future<void> _stopConversation() async {
+    _conversing = false;
+
+    // stop audio playback
+    _stopAudio();
+
     // tell Frame to stop streaming audio
     await frame!.sendMessage(TxCode(msgCode: 0x30, value: 0));
 
-    // TODO we should also be able to send
-    // rxAudio.detach() to close the controller controlling our audio stream
+    // stop openai from producing anymore content
+    _channel?.sink.close();
+
+    // rxAudio.detach() to close/flush the controller controlling our audio stream
+    _rxAudio.detach();
+  }
+
+  /// puts some text into our scrolling log in the UI
+  void _appendEvent(String evt) {
+    setState(() {
+      _eventLog.add(evt);
+    });
+    _scrollToBottom();
   }
 
   void _scrollToBottom() {
