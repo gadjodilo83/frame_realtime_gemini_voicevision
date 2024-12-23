@@ -24,7 +24,7 @@
     <uses-permission android:name="android.permission.INTERNET"/>
 
     <application
-        android:label="Frame Realtime OpenAI Voice"
+        android:label="Frame Realtime Gemini Voice and Vision"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

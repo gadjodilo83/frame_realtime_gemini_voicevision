@@ -221,11 +221,11 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
     startForegroundService();
     return WithForegroundTask(
       child: MaterialApp(
-        title: 'Frame Realtime OpenAI Voice',
+        title: 'Frame Realtime Gemini Voice and Vision',
         theme: ThemeData.dark(),
         home: Scaffold(
           appBar: AppBar(
-            title: const Text('Frame Realtime OpenAI Voice'),
+            title: const Text('Frame Realtime Gemini Voice and Vision'),
             actions: [getBatteryWidget()]
           ),
           body: Center(
@@ -234,7 +234,7 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  TextField(controller: _apiKeyController, decoration: const InputDecoration(hintText: 'Enter OpenAI API Key'),),
+                  TextField(controller: _apiKeyController, decoration: const InputDecoration(hintText: 'Enter Gemini API Key'),),
                   if (_errorMsg != null) Text(_errorMsg!, style: const TextStyle(backgroundColor: Colors.red)),
                   ElevatedButton(onPressed: _savePrefs, child: const Text('Save')),
 

@@ -1,3 +1,3 @@
-# Frame Realtime OpenAI Voice
+# Frame Realtime Gemini Voice and Vision
 
-## OpenAI API Setup
+## Gemini API Setup
