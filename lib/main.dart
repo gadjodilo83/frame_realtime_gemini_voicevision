@@ -258,8 +258,27 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
     }
     else {
       // some other kind of event
-      _log.info(eventString);
-      _appendEvent(eventString);
+      var serverContent = event['serverContent'];
+      if (serverContent != null) {
+        if (serverContent['interrupted'] != null) {
+          // TODO process interruption
+          _stopAudio();
+          // TODO communicate interruption playback point back to server?
+          _appendEvent('Interruption detected');
+        }
+        else if (serverContent['turnComplete'] != null) {
+          // server has finished sending
+          _appendEvent('Server turn complete');
+        }
+      }
+      else if (event['setupComplete'] != null) {
+        _appendEvent('Setup is complete');
+      }
+      else {
+        // unknown server message
+        _log.info(eventString);
+        _appendEvent(eventString);
+      }
     }
 
     // TODO work out what to do with the message
@@ -322,6 +341,7 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
 
     // tell Frame to stop streaming audio
     await frame!.sendMessage(TxCode(msgCode: 0x30, value: 0));
+    _streaming = false;
 
     // stop openai from producing anymore content
     _channel?.sink.close();
