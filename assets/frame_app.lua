@@ -1,15 +1,18 @@
 local data = require('data.min')
 local battery = require('battery.min')
+local camera = require('camera.min')
 local code = require('code.min')
 local plain_text = require('plain_text.min')
 
 -- Phone to Frame flags
 TEXT_MSG = 0x0b
+CAMERA_SETTINGS_MSG = 0x0d
 AUDIO_SUBS_MSG = 0x30
 TAP_SUBS_MSG = 0x10
 
 -- register the message parser so it's automatically called when matching data comes in
 data.parsers[TEXT_MSG] = plain_text.parse_plain_text
+data.parsers[CAMERA_SETTINGS_MSG] = camera.parse_camera_settings
 data.parsers[AUDIO_SUBS_MSG] = code.parse_code
 data.parsers[TAP_SUBS_MSG] = code.parse_code
 
@@ -70,6 +73,17 @@ function app_loop()
 
                         data.app_data[TAP_SUBS_MSG] = nil
                     end
+
+					if (data.app_data[CAMERA_SETTINGS_MSG] ~= nil) then
+                        print('photo requested')
+						rc, err = pcall(camera.camera_capture_and_send, data.app_data[CAMERA_SETTINGS_MSG])
+
+						if rc == false then
+							print(err)
+						end
+
+						data.app_data[CAMERA_SETTINGS_MSG] = nil
+					end
 
                     if (data.app_data[AUDIO_SUBS_MSG] ~= nil) then
 

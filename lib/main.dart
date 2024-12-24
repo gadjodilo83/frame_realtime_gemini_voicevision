@@ -13,7 +13,9 @@ import 'package:logging/logging.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:simple_frame_app/rx/audio.dart';
+import 'package:simple_frame_app/rx/photo.dart';
 import 'package:simple_frame_app/rx/tap.dart';
+import 'package:simple_frame_app/tx/camera_settings.dart';
 import 'package:simple_frame_app/tx/code.dart';
 import 'package:simple_frame_app/tx/plain_text.dart';
 import 'package:simple_frame_app/simple_frame_app.dart';
@@ -49,19 +51,24 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
   bool _conversing = false;
   // interestingly, 'response_modalities' seems to allow only "text", "audio", "image" - not a list. Audio only is fine for us
   final Map<String, dynamic> _setupMap = {'setup': { 'model': 'models/gemini-2.0-flash-exp', 'generation_config': {'response_modalities': 'audio'}}};
-  final Map<String, dynamic> _realtimeInputMap = {'realtimeInput': { 'mediaChunks': [{'mimeType': 'audio/pcm;rate=16000', 'data': ''}]}};
+  final Map<String, dynamic> _realtimeAudioInputMap = {'realtimeInput': { 'mediaChunks': [{'mimeType': 'audio/pcm;rate=16000', 'data': ''}]}};
+  final Map<String, dynamic> _realtimeImageInputMap = {'realtimeInput': { 'mediaChunks': [{'mimeType': 'image/jpeg', 'data': ''}]}};
 
   // audio and buffer (player is FlutterPcmSound, all static)
   final _audioBuffer = ListQueue<Uint8List>();
   bool _playingAudio = false;
 
-  // tap subscription and audio streaming status
+  // tap subscription and audio/photo streaming status
   StreamSubscription<int>? _tapSubs;
   bool _streaming = false;
   // 8kHz 16-bit linear PCM from Frame mic (only the high 10 bits iirc)
   final RxAudio _rxAudio = RxAudio(streaming: true);
   StreamSubscription<Uint8List>? _audioSubs;
   Stream<Uint8List>? _audioSampleStream;
+  final RxPhoto _rxPhoto = RxPhoto();
+  StreamSubscription<Uint8List>? _photoSubs;
+  Stream<Uint8List>? _photoStream;
+  Timer? _photoTimer;
 
   // UI display
   final List<String> _eventLog = List.empty(growable: true);
@@ -74,6 +81,7 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
     hierarchicalLoggingEnabled = true;
     Logger.root.level = Level.FINE;
     Logger('Bluetooth').level = Level.OFF;
+    Logger('RxPhoto').level = Level.FINE;
     Logger('RxAudio').level = Level.FINE;
     Logger('RxTap').level = Level.FINE;
 
@@ -125,6 +133,7 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
     await _channel?.sink.close();
     await _audioSubs?.cancel();
     FlutterPcmSound.release();
+    _photoTimer?.cancel();
     super.dispose();
   }
 
@@ -268,9 +277,39 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
       // tell Frame to start streaming audio
       await frame!.sendMessage(TxCode(msgCode: 0x30, value: 1));
 
+      // immediately request a photo, then every few seconds while the conversation is running
+      await _requestPhoto();
+      _photoTimer = Timer.periodic(const Duration(seconds: 5), (timer) async {
+        _log.info('Timer Fired!');
+
+        if (!_conversing) {
+          timer.cancel();
+          _photoTimer = null;
+          _log.info('Conversation ended, stop requesting photos');
+          return;
+        }
+
+        // send the request to Frame
+        await _requestPhoto();
+      });
+
     } catch (e) {
       _log.warning(() => 'Error executing application logic: $e');
     }
+  }
+
+  /// Request a photo from Frame
+  Future<void> _requestPhoto() async {
+    _log.info('requesting photo from Frame');
+
+    // prepare to receive the photo from Frame
+    // this must happen each time as the stream
+    // closes after each photo is sent
+    _photoStream = _rxPhoto.attach(frame!.dataResponse);
+    _photoSubs?.cancel();
+    _photoSubs = _photoStream!.listen(_handleFramePhoto);
+
+    await frame!.sendMessage(TxCameraSettings(msgCode: 0x0d));
   }
 
   /// handle the server events that come through the websocket
@@ -328,10 +367,27 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
 
       // set the data into the realtime input map before serializing
       // TODO can't I just cache the last little map and set it there at least?
-      _realtimeInputMap['realtimeInput']['mediaChunks'][0]['data'] = base64audio;
+      _realtimeAudioInputMap['realtimeInput']['mediaChunks'][0]['data'] = base64audio;
 
-      // send audio data to websocket
-      _channel!.sink.add(jsonEncode(_realtimeInputMap));
+      // send data to websocket
+      _channel!.sink.add(jsonEncode(_realtimeAudioInputMap));
+    }
+  }
+
+    /// pass the photo from Frame to the API
+  void _handleFramePhoto(Uint8List jpegBytes) {
+    _log.info('photo received from Frame');
+    if (_conversing) {
+      // base64 encode
+      var base64image = base64Encode(jpegBytes);
+
+      // set the data into the realtime input map before serializing
+      // TODO can't I just cache the last little map and set it there at least?
+      _realtimeImageInputMap['realtimeInput']['mediaChunks'][0]['data'] = base64image;
+
+      // send data to websocket
+      _log.info('sending photo');
+      _channel!.sink.add(jsonEncode(_realtimeImageInputMap));
     }
   }
 
@@ -361,6 +417,10 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
 
     // stop audio playback
     _stopAudio();
+
+    // stop requesting photos periodically
+    _photoTimer?.cancel();
+    _photoTimer = null;
 
     // tell Frame to stop streaming audio
     await frame!.sendMessage(TxCode(msgCode: 0x30, value: 0));
