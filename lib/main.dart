@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
-import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -48,12 +47,13 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
   WebSocketChannel? _channel;
   StreamSubscription<dynamic>? _channelSubs;
   bool _conversing = false;
-  // TODO interestingly, 'response_modalities' seems to allow only "text", "audio", "image" - not a list. Audio only is fine for us
+  // interestingly, 'response_modalities' seems to allow only "text", "audio", "image" - not a list. Audio only is fine for us
   final Map<String, dynamic> _setupMap = {'setup': { 'model': 'models/gemini-2.0-flash-exp', 'generation_config': {'response_modalities': 'audio'}}};
   final Map<String, dynamic> _realtimeInputMap = {'realtimeInput': { 'mediaChunks': [{'mimeType': 'audio/pcm;rate=16000', 'data': ''}]}};
 
   // audio and buffer (player is FlutterPcmSound, all static)
   final _audioBuffer = ListQueue<Uint8List>();
+  bool _playingAudio = false;
 
   // tap subscription and audio streaming status
   StreamSubscription<int>? _tapSubs;
@@ -96,15 +96,9 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
     // Initialize the audio
     // gemini sends mono pcm16 24kHz
     const sampleRate = 24000;
+    FlutterPcmSound.setLogLevel(LogLevel.error);
     await FlutterPcmSound.setup(sampleRate: sampleRate, channelCount: 1);
-
-    if (Platform.isAndroid) {
-      FlutterPcmSound.setFeedThreshold(-1);
-    }
-    else {
-      FlutterPcmSound.setFeedThreshold(sampleRate ~/ 30);
-    }
-
+    FlutterPcmSound.setFeedThreshold(sampleRate ~/ 30);
     FlutterPcmSound.setFeedCallback(_onFeed);
 
     // then kick off the connection to Frame and start the app if possible, unawaited
@@ -120,7 +114,8 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
         await FlutterPcmSound.feed(PcmArrayInt16(bytes: (_audioBuffer.removeFirst()).buffer.asByteData()));
       }
       else {
-        _log.fine('nothing to feed');
+        _log.fine('Response audio ended');
+        _playingAudio = false;
       }
     }
   }
@@ -298,10 +293,12 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
       var serverContent = event['serverContent'];
       if (serverContent != null) {
         if (serverContent['interrupted'] != null) {
-          // TODO process interruption
+          // process interruption to stop audio
           _stopAudio();
-          // TODO communicate interruption playback point back to server?
           _appendEvent('---Interruption---');
+          _log.fine('Response interrupted by user');
+
+          // TODO communicate interruption playback point back to server?
         }
         else if (serverContent['turnComplete'] != null) {
           // server has finished sending
@@ -310,6 +307,7 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
       }
       else if (event['setupComplete'] != null) {
         _appendEvent('Setup is complete');
+        _log.info('Gemini setup is complete');
       }
       else {
         // unknown server message
@@ -340,7 +338,13 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
   /// Add the PCM audio bytes to the buffer for playing
   Future<void> _appendAudio(Uint8List audioBytes) async {
     _audioBuffer.add(audioBytes);
-    _onFeed(0); // kick off playback if it's not playing
+
+    // kick off playback if it's not playing
+    if (!_playingAudio) {
+      _playingAudio = true;
+      _onFeed(0);
+      _log.fine('Response audio started');
+    }
   }
 
   /// Cancel the playing of the selected recording
