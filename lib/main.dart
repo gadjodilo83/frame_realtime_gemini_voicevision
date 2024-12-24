@@ -50,7 +50,8 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
   StreamSubscription<dynamic>? _channelSubs;
   bool _conversing = false;
   // interestingly, 'response_modalities' seems to allow only "text", "audio", "image" - not a list. Audio only is fine for us
-  final Map<String, dynamic> _setupMap = {'setup': { 'model': 'models/gemini-2.0-flash-exp', 'generation_config': {'response_modalities': 'audio'}}};
+  // voices are: Puck, Charon, Kore, Fenrir, Aoede
+  final Map<String, dynamic> _setupMap = {'setup': { 'model': 'models/gemini-2.0-flash-exp', 'generation_config': {'response_modalities': 'audio', 'speech_config': {'voice_config': {'prebuilt_voice_config': {'voice_name': 'Charon'}}}}}};
   final Map<String, dynamic> _realtimeAudioInputMap = {'realtimeInput': { 'mediaChunks': [{'mimeType': 'audio/pcm;rate=16000', 'data': ''}]}};
   final Map<String, dynamic> _realtimeImageInputMap = {'realtimeInput': { 'mediaChunks': [{'mimeType': 'image/jpeg', 'data': ''}]}};
 
@@ -69,6 +70,7 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
   StreamSubscription<Uint8List>? _photoSubs;
   Stream<Uint8List>? _photoStream;
   Timer? _photoTimer;
+  Image? _image;
 
   // UI display
   final List<String> _eventLog = List.empty(growable: true);
@@ -389,6 +391,11 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
       _log.info('sending photo');
       _channel!.sink.add(jsonEncode(_realtimeImageInputMap));
     }
+
+    // update the UI with the latest image
+    setState(() {
+      _image = Image.memory(jpegBytes, gaplessPlayback: true);
+    });
   }
 
   /// Add the PCM audio bytes to the buffer for playing
@@ -480,6 +487,7 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
                   Expanded(child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
+                      _image ?? Container(),
                       Expanded(
                         child: ListView.builder(
                           controller: _eventLogController, // Auto-scroll controller
