@@ -5,6 +5,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart' as fbp;
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:flutter_pcm_sound/flutter_pcm_sound.dart';
 import 'package:frame_realtime_gemini_voicevision/audio_data_extractor.dart';
@@ -23,6 +24,9 @@ import 'foreground_service.dart';
 void main() {
   // Set up Android foreground service
   initializeForegroundService();
+
+  // quieten FBP logs
+  fbp.FlutterBluePlus.setLogLevel(fbp.LogLevel.info);
 
   runApp(const MainApp());
 }
