@@ -1,13 +1,15 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
+import 'package:flutter_pcm_sound/flutter_pcm_sound.dart';
 import 'package:frame_realtime_gemini_voicevision/audio_data_extractor.dart';
 import 'package:frame_realtime_gemini_voicevision/audio_upsampler.dart';
 import 'package:logging/logging.dart';
-import 'package:raw_sound/raw_sound_player.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:simple_frame_app/rx/audio.dart';
@@ -46,8 +48,8 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
   final Map<String, dynamic> _setupMap = {'setup': { 'model': 'models/gemini-2.0-flash-exp', 'generation_config': {'response_modalities': 'audio'}}};
   final Map<String, dynamic> _realtimeInputMap = {'realtimeInput': { 'mediaChunks': [{'mimeType': 'audio/pcm;rate=16000', 'data': ''}]}};
 
-  // raw sound player
-  final _player = RawSoundPlayer();
+  // audio and buffer (player is FlutterPcmSound, all static)
+  final _audioBuffer = ListQueue<Uint8List>();
 
   // tap subscription and audio streaming status
   StreamSubscription<int>? _tapSubs;
@@ -80,22 +82,50 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
   void initState() {
     super.initState();
 
-    // use a small buffer to allow short clips to be played - raw_sound won't play clips smaller than bufferSize bytes
-    // gemini pcm16 is apparently mono 24kHz
-    // kick off asynchronously
-    _player.initialize(bufferSize: 32768, nChannels: 1, sampleRate: 24000, pcmType: RawSoundPCMType.PCMI16);
+    _asyncInit();
+  }
 
+  Future<void> _asyncInit() async {
     // load up the saved text field data
-    _loadPrefs()
-      // then kick off the connection to Frame and start the app if possible
-      .then((_) => tryScanAndConnectAndStart(andRun: true));
+    await _loadPrefs();
+
+    // Initialize the audio
+    // gemini sends mono pcm16 24kHz
+    const sampleRate = 24000;
+    await FlutterPcmSound.setup(sampleRate: sampleRate, channelCount: 1);
+
+    if (Platform.isAndroid) {
+      FlutterPcmSound.setFeedThreshold(-1);
+    }
+    else {
+      FlutterPcmSound.setFeedThreshold(sampleRate ~/ 30);
+    }
+
+    FlutterPcmSound.setFeedCallback(_onFeed);
+
+    // then kick off the connection to Frame and start the app if possible, unawaited
+    tryScanAndConnectAndStart(andRun: true);
+  }
+
+  /// Feed the audio player with samples if we have some more, but don't send
+  /// too much to the player because we want to be able to interrupt quickly
+  /// If we don't feed the player, we won't get called again so we need to kick it off again
+  void _onFeed(int remainingFrames) async {
+    if (remainingFrames < 2000) {
+      if (_audioBuffer.isNotEmpty) {
+        await FlutterPcmSound.feed(PcmArrayInt16(bytes: (_audioBuffer.removeFirst()).buffer.asByteData()));
+      }
+      else {
+        _log.fine('nothing to feed');
+      }
+    }
   }
 
   @override
   void dispose() async {
     await _channel?.sink.close();
-    await _player.release();
     await _audioSubs?.cancel();
+    FlutterPcmSound.release();
     super.dispose();
   }
 
@@ -208,6 +238,10 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
   Future<void> _startConversation() async {
     _appendEvent('Starting conversation');
 
+    // get the audio playback ready
+    _audioBuffer.clear();
+    FlutterPcmSound.start();
+
     // get a fresh websocket channel each time we start a conversation for now
     await _channel?.sink.close();
     _channel = WebSocketChannel.connect(Uri.parse('wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${_apiKeyController.text}'));
@@ -252,7 +286,7 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
 
     if (audioData != null) {
       for (var chunk in audioData) {
-        await _playAudio(chunk);
+        await _appendAudio(chunk);
       }
     }
     else {
@@ -299,22 +333,16 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
     }
   }
 
-  /// Play the audio from the selected recording
-  Future<void> _playAudio(Uint8List audioBytes) async {
-    if (!_player.isPlaying) {
-      await _player.play();
-    }
-
-    if (_player.isPlaying) {
-      await _player.feed(Uint8List.fromList(audioBytes));
-    }
+  /// Add the PCM audio bytes to the buffer for playing
+  Future<void> _appendAudio(Uint8List audioBytes) async {
+    _audioBuffer.add(audioBytes);
+    _onFeed(0); // kick off playback if it's not playing
   }
 
   /// Cancel the playing of the selected recording
   Future<void> _stopAudio() async {
-    //if (_player.isPlaying) {
-      await _player.stop();
-    //}
+    // by clearing the buffered PCM data, the player will stop being fed audio
+    _audioBuffer.clear();
   }
 
   /// When we receive a tap to stop the conversation, cancel the audio streaming from Frame,
