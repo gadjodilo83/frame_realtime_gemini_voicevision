@@ -51,7 +51,7 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
   bool _conversing = false;
   // interestingly, 'response_modalities' seems to allow only "text", "audio", "image" - not a list. Audio only is fine for us
   // voices are: Puck, Charon, Kore, Fenrir, Aoede
-  final Map<String, dynamic> _setupMap = {'setup': { 'model': 'models/gemini-2.0-flash-exp', 'generation_config': {'response_modalities': 'audio', 'speech_config': {'voice_config': {'prebuilt_voice_config': {'voice_name': 'Charon'}}}}}};
+  final Map<String, dynamic> _setupMap = {'setup': { 'model': 'models/gemini-2.0-flash-exp', 'generation_config': {'response_modalities': 'audio', 'speech_config': {'voice_config': {'prebuilt_voice_config': {'voice_name': 'Puck'}}}}}};
   final Map<String, dynamic> _realtimeAudioInputMap = {'realtimeInput': { 'mediaChunks': [{'mimeType': 'audio/pcm;rate=16000', 'data': ''}]}};
   final Map<String, dynamic> _realtimeImageInputMap = {'realtimeInput': { 'mediaChunks': [{'mimeType': 'image/jpeg', 'data': ''}]}};
 
