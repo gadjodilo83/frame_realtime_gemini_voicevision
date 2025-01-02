@@ -134,7 +134,7 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
   void dispose() async {
     await _channel?.sink.close();
     await _audioSubs?.cancel();
-    FlutterPcmSound.release();
+    await FlutterPcmSound.release();
     _photoTimer?.cancel();
     super.dispose();
   }
