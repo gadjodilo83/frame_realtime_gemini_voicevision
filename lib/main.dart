@@ -43,6 +43,7 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
 
   /// realtime voice application members
   late final GeminiRealtime _gemini;
+  GeminiVoiceName _voiceName = GeminiVoiceName.Puck;
 
   // status of audio output with FlutterPCMSound
   bool _playingAudio = false;
@@ -171,7 +172,7 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
     }
 
     // connect to Gemini realtime
-    await _gemini.connect(_apiKeyController.text, GeminiVoiceName.Puck, 'You are a helpful assistant that always talks like a pirate');
+    await _gemini.connect(_apiKeyController.text, _voiceName, 'You are a helpful assistant that always talks like a pirate');
 
     if (!_gemini.isConnected()) {
       _log.severe('Connection to Gemini failed');
@@ -420,9 +421,24 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
             child: Container(
               margin: const EdgeInsets.symmetric(horizontal: 16),
               child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
+                mainAxisAlignment: MainAxisAlignment.start,
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   TextField(controller: _apiKeyController, decoration: const InputDecoration(hintText: 'Enter Gemini API Key'),),
+                  DropdownButton<GeminiVoiceName>(
+                    value: _voiceName,
+                    onChanged: (GeminiVoiceName? newValue) {
+                      setState(() {
+                      _voiceName = newValue!;
+                      });
+                    },
+                    items: GeminiVoiceName.values.map<DropdownMenuItem<GeminiVoiceName>>((GeminiVoiceName value) {
+                      return DropdownMenuItem<GeminiVoiceName>(
+                      value: value,
+                      child: Text(value.toString().split('.').last),
+                      );
+                    }).toList(),
+                  ),
                   if (_errorMsg != null) Text(_errorMsg!, style: const TextStyle(backgroundColor: Colors.red)),
                   ElevatedButton(onPressed: _savePrefs, child: const Text('Save')),
 
