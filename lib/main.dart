@@ -72,6 +72,7 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
 
   // UI display
   final _apiKeyController = TextEditingController();
+  final _systemInstructionController = TextEditingController();
   final List<String> _eventLog = List.empty(growable: true);
   final _eventLogController = ScrollController();
   static const _textStyle = TextStyle(fontSize: 20);
@@ -146,21 +147,25 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
       _apiKeyController.text = prefs.getString('api_key') ?? '';
+      _systemInstructionController.text = prefs.getString('system_instruction') ?? 'The stream of images are coming live from the user\'s smart glasses, they are not a recorded video. For example, don\'t say "the person in the video", say "the person in front of you" if you are referring to someone you can see in the images.\n\nNo need to start responding when the images come in, wait for the user to start talking and only refer to the live images when relevant.\n\nTry not to repeat what the user is asking unless you\'re really unsure.';
+      _voiceName = GeminiVoiceName.values.firstWhere(
+        (e) => e.toString().split('.').last == (prefs.getString('voice_name') ?? 'Puck'),
+        orElse: () => GeminiVoiceName.Puck,
+      );
     });
   }
 
   Future<void> _savePrefs() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('api_key', _apiKeyController.text);
+    await prefs.setString('system_instruction', _systemInstructionController.text);
+    await prefs.setString('voice_name', _voiceName.name);
   }
 
   /// This application uses Gemini's realtime API over WebSockets.
   /// It has a running main loop in this function and also on the Frame (frame_app.lua)
   @override
   Future<void> run() async {
-    // TODO think about if/when I want to clear this
-    //      _eventLog.clear();
-
     // validate API key exists at least
     _errorMsg = null;
     if (_apiKeyController.text.isEmpty) {
@@ -172,7 +177,7 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
     }
 
     // connect to Gemini realtime
-    await _gemini.connect(_apiKeyController.text, _voiceName, 'You are a helpful assistant that always talks like a pirate');
+    await _gemini.connect(_apiKeyController.text, _voiceName, _systemInstructionController.text);
 
     if (!_gemini.isConnected()) {
       _log.severe('Connection to Gemini failed');
@@ -422,22 +427,38 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
               margin: const EdgeInsets.symmetric(horizontal: 16),
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.start,
-                crossAxisAlignment: CrossAxisAlignment.start,
+                crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
-                  TextField(controller: _apiKeyController, decoration: const InputDecoration(hintText: 'Enter Gemini API Key'),),
-                  DropdownButton<GeminiVoiceName>(
-                    value: _voiceName,
-                    onChanged: (GeminiVoiceName? newValue) {
-                      setState(() {
-                      _voiceName = newValue!;
-                      });
-                    },
-                    items: GeminiVoiceName.values.map<DropdownMenuItem<GeminiVoiceName>>((GeminiVoiceName value) {
-                      return DropdownMenuItem<GeminiVoiceName>(
-                      value: value,
-                      child: Text(value.toString().split('.').last),
-                      );
-                    }).toList(),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: _apiKeyController,
+                          decoration: const InputDecoration(hintText: 'Enter Gemini API Key'),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      DropdownButton<GeminiVoiceName>(
+                        value: _voiceName,
+                        onChanged: (GeminiVoiceName? newValue) {
+                          setState(() {
+                          _voiceName = newValue!;
+                          });
+                        },
+                        items: GeminiVoiceName.values.map<DropdownMenuItem<GeminiVoiceName>>((GeminiVoiceName value) {
+                          return DropdownMenuItem<GeminiVoiceName>(
+                            value: value,
+                            child: Text(value.toString().split('.').last),
+                          );
+                        }).toList(),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: _systemInstructionController,
+                    maxLines: 3,
+                    decoration: const InputDecoration(hintText: 'System Instruction'),
                   ),
                   if (_errorMsg != null) Text(_errorMsg!, style: const TextStyle(backgroundColor: Colors.red)),
                   ElevatedButton(onPressed: _savePrefs, child: const Text('Save')),
