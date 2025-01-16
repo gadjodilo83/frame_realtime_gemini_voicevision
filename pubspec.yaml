@@ -31,4 +31,4 @@ flutter:
     - packages/simple_frame_app/lua/camera.min.lua
     - packages/simple_frame_app/lua/code.min.lua
     - packages/simple_frame_app/lua/plain_text.min.lua
-    - assets/frame_app.lua
+    - assets/frame_app.min.lua
