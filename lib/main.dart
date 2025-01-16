@@ -171,7 +171,7 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
     }
 
     // connect to Gemini realtime
-    await _gemini.connect(_apiKeyController.text);
+    await _gemini.connect(_apiKeyController.text, GeminiVoiceName.Puck, 'You are a helpful assistant that always talks like a pirate');
 
     if (!_gemini.isConnected()) {
       _log.severe('Connection to Gemini failed');
@@ -257,6 +257,9 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
 
     // clear the display
     await frame!.sendMessage(TxPlainText(msgCode: 0x0b, text: ' '));
+
+    // disconnect from Gemini
+    await _gemini.disconnect();
 
     setState(() {
       currentState = ApplicationState.ready;

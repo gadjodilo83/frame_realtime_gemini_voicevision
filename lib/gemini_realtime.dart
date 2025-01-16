@@ -8,6 +8,8 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'audio_data_extractor.dart';
 
+enum GeminiVoiceName { Puck, Charon, Kore, Fenrir, Aoede }
+
 class GeminiRealtime {
   final _log = Logger("Gem");
 
@@ -16,8 +18,9 @@ class GeminiRealtime {
   bool _connected = false;
 
   // interestingly, 'response_modalities' seems to allow only "text", "audio", "image" - not a list. Audio only is fine for us
-  // voices are: Puck, Charon, Kore, Fenrir, Aoede
-  final Map<String, dynamic> _setupMap = {'setup': { 'model': 'models/gemini-2.0-flash-exp', 'generation_config': {'response_modalities': 'audio', 'speech_config': {'voice_config': {'prebuilt_voice_config': {'voice_name': 'Puck'}}}}}};
+  // Valid voices are: Puck, Charon, Kore, Fenrir, Aoede (Set to Puck, override in connect())
+  // system instruction is also not set in the template map (set during connect())
+  final Map<String, dynamic> _setupMap = {'setup': { 'model': 'models/gemini-2.0-flash-exp', 'generation_config': {'response_modalities': 'audio', 'speech_config': {'voice_config': {'prebuilt_voice_config': {'voice_name': 'Puck'}}}}, 'system_instruction': { 'parts': [ { 'text': '' } ] }}};
   final Map<String, dynamic> _realtimeAudioInputMap = {'realtimeInput': { 'mediaChunks': [{'mimeType': 'audio/pcm;rate=16000', 'data': ''}]}};
   final Map<String, dynamic> _realtimeImageInputMap = {'realtimeInput': { 'mediaChunks': [{'mimeType': 'image/jpeg', 'data': ''}]}};
 
@@ -37,9 +40,13 @@ class GeminiRealtime {
   bool isConnected() => _connected;
 
   /// Connect to Gemini Live and set up the websocket connection using the specified API key
-  Future<bool> connect(String apiKey) async {
+  Future<bool> connect(String apiKey, GeminiVoiceName voice, String systemInstruction) async {
     eventLogger('Connecting to Gemini');
     _log.info('Connecting to Gemini');
+
+    // configure the session with the specified voice and system instruction
+    _setupMap['setup']['generation_config']['speech_config']['voice_config']['prebuilt_voice_config']['voice_name'] = voice.name;
+    _setupMap['setup']['system_instruction']['parts'][0]['text'] = systemInstruction;
 
     // get the audio playback ready
     _audioBuffer.clear();
@@ -53,11 +60,12 @@ class GeminiRealtime {
     // and return false if not connected properly (or throw the exception and print the error?)
     await _channel!.ready;
 
-    // set up the config for the model/modality
-    _channel!.sink.add(jsonEncode(_setupMap));
-
     // set up stream handler for channel to handle events
     _channelSubs = _channel!.stream.listen(_handleGeminiEvent);
+
+    // set up the config for the model/modality
+    _log.info(_setupMap);
+    _channel!.sink.add(jsonEncode(_setupMap));
 
     _connected = true;
     eventLogger('Connected');
@@ -167,6 +175,9 @@ class GeminiRealtime {
         else if (serverContent['turnComplete'] != null) {
           // server has finished sending
           eventLogger('Server turn complete');
+        }
+        else {
+          eventLogger(serverContent);
         }
       }
       else if (event['setupComplete'] != null) {
