@@ -1,25 +1,22 @@
 import 'dart:async';
-import 'dart:collection';
-import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart' as fbp;
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:flutter_pcm_sound/flutter_pcm_sound.dart';
-import 'package:frame_realtime_gemini_voicevision/audio_data_extractor.dart';
 import 'package:frame_realtime_gemini_voicevision/audio_upsampler.dart';
+import 'package:frame_realtime_gemini_voicevision/gemini_realtime.dart';
 import 'package:logging/logging.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:simple_frame_app/rx/audio.dart';
 import 'package:simple_frame_app/rx/photo.dart';
 import 'package:simple_frame_app/rx/tap.dart';
-import 'package:simple_frame_app/tx/camera_settings.dart';
+import 'package:simple_frame_app/tx/capture_settings.dart';
 import 'package:simple_frame_app/tx/code.dart';
 import 'package:simple_frame_app/tx/plain_text.dart';
 import 'package:simple_frame_app/simple_frame_app.dart';
-import 'package:web_socket_channel/web_socket_channel.dart';
 import 'foreground_service.dart';
 
 void main() {
@@ -45,36 +42,37 @@ class MainApp extends StatefulWidget {
 class MainAppState extends State<MainApp> with SimpleFrameAppState {
 
   /// realtime voice application members
-  final TextEditingController _apiKeyController = TextEditingController();
-  WebSocketChannel? _channel;
-  StreamSubscription<dynamic>? _channelSubs;
-  bool _conversing = false;
-  // interestingly, 'response_modalities' seems to allow only "text", "audio", "image" - not a list. Audio only is fine for us
-  // voices are: Puck, Charon, Kore, Fenrir, Aoede
-  final Map<String, dynamic> _setupMap = {'setup': { 'model': 'models/gemini-2.0-flash-exp', 'generation_config': {'response_modalities': 'audio', 'speech_config': {'voice_config': {'prebuilt_voice_config': {'voice_name': 'Puck'}}}}}};
-  final Map<String, dynamic> _realtimeAudioInputMap = {'realtimeInput': { 'mediaChunks': [{'mimeType': 'audio/pcm;rate=16000', 'data': ''}]}};
-  final Map<String, dynamic> _realtimeImageInputMap = {'realtimeInput': { 'mediaChunks': [{'mimeType': 'image/jpeg', 'data': ''}]}};
+  late final GeminiRealtime _gemini;
 
-  // audio and buffer (player is FlutterPcmSound, all static)
-  final _audioBuffer = ListQueue<Uint8List>();
+  // status of audio output with FlutterPCMSound
   bool _playingAudio = false;
 
-  // tap subscription and audio/photo streaming status
-  StreamSubscription<int>? _tapSubs;
+  // true when audio/photos are being streamed from Frame
   bool _streaming = false;
-  // 8kHz 16-bit linear PCM from Frame mic (only the high 10 bits iirc)
+
+  // tap subscription
+  StreamSubscription<int>? _tapSubs;
+
+  // Audio: 8kHz 16-bit linear PCM from Frame mic (only the high 10 bits iirc)
   final RxAudio _rxAudio = RxAudio(streaming: true);
-  StreamSubscription<Uint8List>? _audioSubs;
-  Stream<Uint8List>? _audioSampleStream;
-  final RxPhoto _rxPhoto = RxPhoto();
+  StreamSubscription<Uint8List>? _frameAudioSubs;
+  Stream<Uint8List>? _frameAudioSampleStream;
+
+  // Photos: 720px VERY_HIGH quality JPEGs
+  static const resolution = 720;
+  static const qualityIndex = 4;
+  static const qualityLevel = 'VERY_HIGH';
+  final RxPhoto _rxPhoto = RxPhoto(qualityLevel: qualityLevel, resolution: resolution);
   StreamSubscription<Uint8List>? _photoSubs;
   Stream<Uint8List>? _photoStream;
+  static const int photoInterval = 5;
   Timer? _photoTimer;
   Image? _image;
 
   // UI display
+  final _apiKeyController = TextEditingController();
   final List<String> _eventLog = List.empty(growable: true);
-  final ScrollController _eventLogController = ScrollController();
+  final _eventLogController = ScrollController();
   static const _textStyle = TextStyle(fontSize: 20);
   String? _errorMsg;
 
@@ -82,7 +80,7 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
     // filter logging
     hierarchicalLoggingEnabled = true;
     Logger.root.level = Level.FINE;
-    Logger('Bluetooth').level = Level.OFF;
+    Logger('Bluetooth').level = Level.FINE;
     Logger('RxPhoto').level = Level.FINE;
     Logger('RxAudio').level = Level.FINE;
     Logger('RxTap').level = Level.FINE;
@@ -90,6 +88,10 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
     Logger.root.onRecord.listen((record) {
       debugPrint('${record.level.name}: [${record.loggerName}] ${record.time}: ${record.message}');
     });
+
+    // Pass the "audio ready" and UI logger callbacks to GeminiRealtime class
+    // so audio will play and events can be displayed
+    _gemini = GeminiRealtime(_audioReadyCallback, _appendEvent);
   }
 
   @override
@@ -103,8 +105,8 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
     // load up the saved text field data
     await _loadPrefs();
 
-    // Initialize the audio
-    // gemini sends mono pcm16 24kHz
+    // Initialize the audio playback framework
+    // (Gemini sends response audio as mono pcm16 24kHz)
     const sampleRate = 24000;
     FlutterPcmSound.setLogLevel(LogLevel.error);
     await FlutterPcmSound.setup(sampleRate: sampleRate, channelCount: 1);
@@ -117,11 +119,11 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
 
   /// Feed the audio player with samples if we have some more, but don't send
   /// too much to the player because we want to be able to interrupt quickly
-  /// If we don't feed the player, we won't get called again so we need to kick it off again
+  /// If we don't feed the player and it stops, we won't get called again so we need to kick it off again
   void _onFeed(int remainingFrames) async {
     if (remainingFrames < 2000) {
-      if (_audioBuffer.isNotEmpty) {
-        await FlutterPcmSound.feed(PcmArrayInt16(bytes: (_audioBuffer.removeFirst()).buffer.asByteData()));
+      if (_gemini.hasResponseAudio()) {
+        await FlutterPcmSound.feed(PcmArrayInt16(bytes: _gemini.getResponseAudioByteData()));
       }
       else {
         _log.fine('Response audio ended');
@@ -131,9 +133,9 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
   }
 
   @override
-  void dispose() async {
-    await _channel?.sink.close();
-    await _audioSubs?.cancel();
+  Future<void> dispose() async {
+    await _gemini.disconnect();
+    await _frameAudioSubs?.cancel();
     await FlutterPcmSound.release();
     _photoTimer?.cancel();
     super.dispose();
@@ -155,6 +157,9 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
   /// It has a running main loop in this function and also on the Frame (frame_app.lua)
   @override
   Future<void> run() async {
+    // TODO think about if/when I want to clear this
+    //      _eventLog.clear();
+
     // validate API key exists at least
     _errorMsg = null;
     if (_apiKeyController.text.isEmpty) {
@@ -165,9 +170,16 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
       return;
     }
 
+    // connect to Gemini realtime
+    await _gemini.connect(_apiKeyController.text);
+
+    if (!_gemini.isConnected()) {
+      _log.severe('Connection to Gemini failed');
+      return;
+    }
+
     setState(() {
       currentState = ApplicationState.running;
-      _eventLog.clear();
     });
 
     try {
@@ -175,28 +187,36 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
       _tapSubs?.cancel();
       _tapSubs = RxTap().attach(frame!.dataResponse)
         .listen((taps) async {
-          if (taps >= 2) {
-            if (!_streaming && !_conversing) {
-              _streaming = true;
-              await frame!.sendMessage(TxPlainText(msgCode: 0x0b, text: 'Connecting...'));
+          _log.info('taps: $taps');
+          if (_gemini.isConnected()) {
 
-              await _startConversation();
+            if (taps >= 2) {
 
-              // show microphone emoji
-              await frame!.sendMessage(TxPlainText(msgCode: 0x0b, text: '\u{F0010}'));
-            }
-            else if (_streaming && _conversing) {
-              await _stopConversation();
-              _streaming = false;
+              if (!_streaming) {
+                await _startFrameStreaming();
 
-              // prompt the user to begin tapping
-              await frame!.sendMessage(TxPlainText(msgCode: 0x0b, text: 'Double-Tap to resume!'));
+                // show microphone emoji
+                await frame!.sendMessage(TxPlainText(msgCode: 0x0b, text: '\u{F0010}'));
+              }
+              else {
+                await _stopFrameStreaming();
+
+                // prompt the user to begin tapping
+                await frame!.sendMessage(TxPlainText(msgCode: 0x0b, text: 'Double-Tap to resume!'));
+              }
             }
-            else {
-              _log.severe('double-tap while streaming and conversing status is not aligned');
-            }
+            // ignore spurious 1-taps
           }
-          // ignore spurious 1-taps
+          else {
+            // Disconnected from Gemini, go back to Ready state
+            _appendEvent('Disconnected from Gemini');
+
+            _stopFrameStreaming();
+
+            setState(() {
+              currentState = ApplicationState.ready;
+            });
+          }
         });
 
       // let Frame know to subscribe for taps and send them to us
@@ -227,7 +247,7 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
     _tapSubs?.cancel();
 
     // cancel the conversation if it's running
-    if (_conversing) _stopConversation();
+    if (_streaming) _stopFrameStreaming();
 
     // tell the Frame to stop streaming audio (regardless of if we are currently)
     await frame!.sendMessage(TxCode(msgCode: 0x30, value: 0));
@@ -244,50 +264,35 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
   }
 
   /// When we receive a tap to start the conversation, we need to start
-  /// audio streaming on Frame and start the WebRTC conversation with OpenAI
-  Future<void> _startConversation() async {
-    _appendEvent('Starting conversation');
+  /// audio and photo streaming on Frame
+  Future<void> _startFrameStreaming() async {
+    _appendEvent('Starting Frame Streaming');
 
-    // get the audio playback ready
-    _audioBuffer.clear();
     FlutterPcmSound.start();
 
-    // get a fresh websocket channel each time we start a conversation for now
-    await _channel?.sink.close();
-    _channel = WebSocketChannel.connect(Uri.parse('wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${_apiKeyController.text}'));
-
-    // connection doesn't complete immediately, wait until it's ready
-    // TODO check what happens if API key is bad, host is bad etc, how long are the timeouts?
-    await _channel!.ready;
-
-    // set up the config for the model/modality
-    _channel!.sink.add(jsonEncode(_setupMap));
-
-    // set up stream handler for channel to handle events
-    _channelSubs = _channel!.stream.listen(_handleGeminiEvent);
-
-    // Gemini side is set up
-    _conversing = true;
+    // app state is conversing; Gemini is connected for the entire duration
+    _streaming = true;
 
     try {
       // the audio stream from Frame, which needs to be closed() to stop the streaming
-      _audioSampleStream = _rxAudio.attach(frame!.dataResponse);
-      _audioSubs?.cancel();
+      _frameAudioSampleStream = _rxAudio.attach(frame!.dataResponse);
+      _frameAudioSubs?.cancel();
       // TODO consider buffering if 128 bytes of PCM16 / 64 bytes of ulaw is too little (e.g. if measured in requests not tokens)
-      _audioSubs = _audioSampleStream!.listen(_handleFrameAudio);
+      _frameAudioSubs = _frameAudioSampleStream!.listen(_handleFrameAudio);
 
       // tell Frame to start streaming audio
       await frame!.sendMessage(TxCode(msgCode: 0x30, value: 1));
+      // TODO why isn't _streaming = true set here?
 
       // immediately request a photo, then every few seconds while the conversation is running
       await _requestPhoto();
-      _photoTimer = Timer.periodic(const Duration(seconds: 5), (timer) async {
+      _photoTimer = Timer.periodic(const Duration(seconds: photoInterval), (timer) async {
         _log.info('Timer Fired!');
 
-        if (!_conversing) {
+        if (!_streaming) {
           timer.cancel();
           _photoTimer = null;
-          _log.info('Conversation ended, stop requesting photos');
+          _log.info('Streaming ended, stop requesting photos');
           return;
         }
 
@@ -298,6 +303,29 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
     } catch (e) {
       _log.warning(() => 'Error executing application logic: $e');
     }
+  }
+
+  /// When we receive a tap to stop the conversation, cancel the audio streaming from Frame,
+  /// which will send "final chunk" message, which will close the audio stream
+  /// and the Gemini conversation needs to stop too
+  Future<void> _stopFrameStreaming() async {
+    _streaming = false;
+
+    // stop audio playback
+    // by clearing the buffered PCM data, the player will stop being fed audio
+    _gemini.stopResponseAudio();
+
+    // stop requesting photos periodically
+    _photoTimer?.cancel();
+    _photoTimer = null;
+
+    // tell Frame to stop streaming audio
+    await frame!.sendMessage(TxCode(msgCode: 0x30, value: 0));
+
+    // rxAudio.detach() to close/flush the controller controlling our audio stream
+    _rxAudio.detach();
+
+    _appendEvent('Ending Frame Streaming');
   }
 
   /// Request a photo from Frame
@@ -311,85 +339,30 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
     _photoSubs?.cancel();
     _photoSubs = _photoStream!.listen(_handleFramePhoto);
 
-    await frame!.sendMessage(TxCameraSettings(msgCode: 0x0d));
+    // TODO check if we can request a raw (headerless) jpeg
+    //_rxPhoto.
+
+    await frame!.sendMessage(TxCaptureSettings(msgCode: 0x0d, resolution: resolution, qualityIndex: qualityIndex));
   }
 
-  /// handle the server events that come through the websocket
-  FutureOr<void> _handleGeminiEvent(dynamic eventJson) async {
-    String eventString = utf8.decode(eventJson);
-
-    // parse the json
-    var event = jsonDecode(eventString);
-
-    // try audio message types first
-    var audioData = AudioDataExtractor.extractAudioData(event);
-
-    if (audioData != null) {
-      for (var chunk in audioData) {
-        await _appendAudio(chunk);
-      }
-    }
-    else {
-      // some other kind of event
-      var serverContent = event['serverContent'];
-      if (serverContent != null) {
-        if (serverContent['interrupted'] != null) {
-          // process interruption to stop audio
-          _stopAudio();
-          _appendEvent('---Interruption---');
-          _log.fine('Response interrupted by user');
-
-          // TODO communicate interruption playback point back to server?
-        }
-        else if (serverContent['turnComplete'] != null) {
-          // server has finished sending
-          _appendEvent('Server turn complete');
-        }
-      }
-      else if (event['setupComplete'] != null) {
-        _appendEvent('Setup is complete');
-        _log.info('Gemini setup is complete');
-      }
-      else {
-        // unknown server message
-        _log.info(eventString);
-        _appendEvent(eventString);
-      }
-    }
-  }
 
   /// pass the audio from Frame (upsampled) to the API
   void _handleFrameAudio(Uint8List pcm16x8) {
-    if (_conversing) {
+    if (_gemini.isConnected()) {
       // upsample PCM16 from 8kHz to 16kHz for Gemini
       var pcm16x16 = AudioUpsampler.upsample8kTo16k(pcm16x8);
 
-      // base64 encode
-      var base64audio = base64Encode(pcm16x16);
-
-      // set the data into the realtime input map before serializing
-      // TODO can't I just cache the last little map and set it there at least?
-      _realtimeAudioInputMap['realtimeInput']['mediaChunks'][0]['data'] = base64audio;
-
-      // send data to websocket
-      _channel!.sink.add(jsonEncode(_realtimeAudioInputMap));
+      // send audio up to Gemini
+      _gemini.sendAudio(pcm16x16);
     }
   }
 
     /// pass the photo from Frame to the API
   void _handleFramePhoto(Uint8List jpegBytes) {
     _log.info('photo received from Frame');
-    if (_conversing) {
-      // base64 encode
-      var base64image = base64Encode(jpegBytes);
+    if (_gemini.isConnected()) {
 
-      // set the data into the realtime input map before serializing
-      // TODO can't I just cache the last little map and set it there at least?
-      _realtimeImageInputMap['realtimeInput']['mediaChunks'][0]['data'] = base64image;
-
-      // send data to websocket
-      _log.info('sending photo');
-      _channel!.sink.add(jsonEncode(_realtimeImageInputMap));
+      _gemini.sendPhoto(jpegBytes);
     }
 
     // update the UI with the latest image
@@ -398,48 +371,14 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
     });
   }
 
-  /// Add the PCM audio bytes to the buffer for playing
-  Future<void> _appendAudio(Uint8List audioBytes) async {
-    _audioBuffer.add(audioBytes);
-
+  /// Notification from GeminiRealtime that some audio is ready for playback
+  void _audioReadyCallback() {
     // kick off playback if it's not playing
     if (!_playingAudio) {
       _playingAudio = true;
       _onFeed(0);
       _log.fine('Response audio started');
     }
-  }
-
-  /// Cancel the playing of the selected recording
-  Future<void> _stopAudio() async {
-    // by clearing the buffered PCM data, the player will stop being fed audio
-    _audioBuffer.clear();
-  }
-
-  /// When we receive a tap to stop the conversation, cancel the audio streaming from Frame,
-  /// which will send "final chunk" message, which will close the audio stream
-  /// and the Gemini conversation needs to stop too
-  Future<void> _stopConversation() async {
-    _conversing = false;
-
-    // stop audio playback
-    _stopAudio();
-
-    // stop requesting photos periodically
-    _photoTimer?.cancel();
-    _photoTimer = null;
-
-    // tell Frame to stop streaming audio
-    await frame!.sendMessage(TxCode(msgCode: 0x30, value: 0));
-    _streaming = false;
-
-    // stop openai from producing anymore content
-    _channel?.sink.close();
-
-    // rxAudio.detach() to close/flush the controller controlling our audio stream
-    _rxAudio.detach();
-
-    _appendEvent('Ending conversation');
   }
 
   /// puts some text into our scrolling log in the UI

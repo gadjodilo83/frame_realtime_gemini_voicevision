@@ -6,13 +6,13 @@ local plain_text = require('plain_text.min')
 
 -- Phone to Frame flags
 TEXT_MSG = 0x0b
-CAMERA_SETTINGS_MSG = 0x0d
+CAPTURE_SETTINGS_MSG = 0x0d
 AUDIO_SUBS_MSG = 0x30
 TAP_SUBS_MSG = 0x10
 
 -- register the message parser so it's automatically called when matching data comes in
 data.parsers[TEXT_MSG] = plain_text.parse_plain_text
-data.parsers[CAMERA_SETTINGS_MSG] = camera.parse_camera_settings
+data.parsers[CAPTURE_SETTINGS_MSG] = camera.parse_capture_settings
 data.parsers[AUDIO_SUBS_MSG] = code.parse_code
 data.parsers[TAP_SUBS_MSG] = code.parse_code
 
@@ -22,7 +22,12 @@ AUDIO_DATA_FINAL_MSG = 0x06
 TAP_MSG = 0x09
 
 function handle_tap()
-	pcall(frame.bluetooth.send, string.char(TAP_MSG))
+	rc, err = pcall(frame.bluetooth.send, string.char(TAP_MSG))
+
+	if rc == false then
+		-- send the error back on the stdout stream
+		print(err)
+	end
 end
 
 -- draw the current text on the display
@@ -36,12 +41,27 @@ function print_text()
     end
 end
 
+function clear_display()
+    frame.display.text(" ", 1, 1)
+    frame.display.show()
+    frame.sleep(0.04)
+end
+
+function run_auto_exp_if_elapsed(prev, interval)
+    local t = frame.time.utc()
+    if ((prev == 0) or ((t - prev) > interval)) then
+        camera.run_auto_exposure()
+        return t
+    else
+        return prev
+    end
+end
+
 -- Main app loop
 function app_loop()
-	-- clear the display
-	frame.display.text(" ", 1, 1)
-	frame.display.show()
+	clear_display()
     local last_batt_update = 0
+    local last_auto_exp = 0
     local streaming = false
 	local audio_data = ''
 	local mtu = frame.bluetooth.max_length()
@@ -74,15 +94,15 @@ function app_loop()
                         data.app_data[TAP_SUBS_MSG] = nil
                     end
 
-					if (data.app_data[CAMERA_SETTINGS_MSG] ~= nil) then
-                        print('photo requested')
-						rc, err = pcall(camera.camera_capture_and_send, data.app_data[CAMERA_SETTINGS_MSG])
+					if (data.app_data[CAPTURE_SETTINGS_MSG] ~= nil) then
+						rc, err = pcall(camera.capture_and_send, data.app_data[CAPTURE_SETTINGS_MSG])
+						clear_display()
 
 						if rc == false then
 							print(err)
 						end
 
-						data.app_data[CAMERA_SETTINGS_MSG] = nil
+						data.app_data[CAPTURE_SETTINGS_MSG] = nil
 					end
 
                     if (data.app_data[AUDIO_SUBS_MSG] ~= nil) then
@@ -139,6 +159,9 @@ function app_loop()
 				end
 			end
 		end
+
+        -- periodic autoexposure every 100ms
+        last_auto_exp = run_auto_exp_if_elapsed(last_auto_exp, 0.1)
 
         -- periodic battery level updates, 120s
         last_batt_update = battery.send_batt_if_elapsed(last_batt_update, 120)
