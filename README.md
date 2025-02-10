@@ -1,7 +1,9 @@
 # Brilliant Labs Frame - Realtime Gemini Voice and Vision Demo
 
-![Realtime Usage](docs/image1.png)
-![Realtime UI](docs/image2.png)
+Click on the images below, or on [this text to view the video](https://www.youtube.com/shorts/SliO6-i2b-w).
+
+[![Realtime Usage](docs/image1.png)](https://www.youtube.com/shorts/SliO6-i2b-w)
+[![Realtime UI](docs/image2.png)](https://www.youtube.com/shorts/SliO6-i2b-w)
 
 Demonstrates the integration of a multimodal realtime assistant with [Brilliant Labs Frame](https://brilliant.xyz/).
 
