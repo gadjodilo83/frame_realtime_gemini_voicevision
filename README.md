@@ -18,3 +18,9 @@ The realtime assistant is provided through the Google Gemini Multimodal Live API
 Add your API key in the text box at the top of the screen of the demo app and "Save".
 
 Please note, API queries using the free usage tier can be used for training Google's models, but queries using paid keys should not. Refer to [Google's documentation](https://ai.google.dev/gemini-api/docs/multimodal-live) for details.
+
+## Running the Demo
+
+Grab your [Brilliant Labs Frame](https://brilliant.xyz/), then:
+* Android: download and run the APK from [Releases](https://github.com/brilliantlabsAR/frame_realtime_gemini_voicevision/releases)
+* iOS: clone, build and deploy to your iPhone using Flutter and Xcode from your Mac.
