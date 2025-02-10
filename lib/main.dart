@@ -147,7 +147,7 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
       _apiKeyController.text = prefs.getString('api_key') ?? '';
-      _systemInstructionController.text = prefs.getString('system_instruction') ?? 'The stream of images are coming live from the user\'s smart glasses, they are not a recorded video. For example, don\'t say "the person in the video", say "the person in front of you" if you are referring to someone you can see in the images.\n\nNo need to start responding when the images come in, wait for the user to start talking and only refer to the live images when relevant.\n\nTry not to repeat what the user is asking unless you\'re really unsure.';
+      _systemInstructionController.text = prefs.getString('system_instruction') ?? 'The stream of images are coming live from the user\'s smart glasses, they are not a recorded video. For example, don\'t say "the person in the video", say "the person in front of you" if you are referring to someone you can see in the images.\n\nAfter the user asks a question, never restate the question but instead directly answer it. No need to start responding when the images come in, wait for the user to start talking and only refer to the live images when relevant.\n\nTry not to repeat what the user is asking unless you\'re really unsure.';
       _voiceName = GeminiVoiceName.values.firstWhere(
         (e) => e.toString().split('.').last == (prefs.getString('voice_name') ?? 'Puck'),
         orElse: () => GeminiVoiceName.Puck,
