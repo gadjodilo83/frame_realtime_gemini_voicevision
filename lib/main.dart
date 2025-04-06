@@ -10,12 +10,12 @@ import 'package:frame_realtime_gemini_voicevision/gemini_realtime.dart';
 import 'package:logging/logging.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:simple_frame_app/rx/audio.dart';
-import 'package:simple_frame_app/rx/photo.dart';
-import 'package:simple_frame_app/rx/tap.dart';
-import 'package:simple_frame_app/tx/capture_settings.dart';
-import 'package:simple_frame_app/tx/code.dart';
-import 'package:simple_frame_app/tx/plain_text.dart';
+import 'package:frame_msg/rx/audio.dart';
+import 'package:frame_msg/rx/photo.dart';
+import 'package:frame_msg/rx/tap.dart';
+import 'package:frame_msg/tx/capture_settings.dart';
+import 'package:frame_msg/tx/code.dart';
+import 'package:frame_msg/tx/plain_text.dart';
 import 'package:simple_frame_app/simple_frame_app.dart';
 import 'foreground_service.dart';
 
@@ -63,10 +63,10 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
   static const resolution = 720;
   static const qualityIndex = 4;
   static const qualityLevel = 'VERY_HIGH';
-  final RxPhoto _rxPhoto = RxPhoto(qualityLevel: qualityLevel, resolution: resolution);
+  final RxPhoto _rxPhoto = RxPhoto(quality: qualityLevel, resolution: resolution);
   StreamSubscription<Uint8List>? _photoSubs;
   Stream<Uint8List>? _photoStream;
-  static const int photoInterval = 5;
+  static const int photoInterval = 3;
   Timer? _photoTimer;
   Image? _image;
 
@@ -147,7 +147,7 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
       _apiKeyController.text = prefs.getString('api_key') ?? '';
-      _systemInstructionController.text = prefs.getString('system_instruction') ?? 'The stream of images are coming live from the user\'s smart glasses, they are not a recorded video. For example, don\'t say "the person in the video", say "the person in front of you" if you are referring to someone you can see in the images.\n\nAfter the user asks a question, never restate the question but instead directly answer it. No need to start responding when the images come in, wait for the user to start talking and only refer to the live images when relevant.\n\nTry not to repeat what the user is asking unless you\'re really unsure.';
+      _systemInstructionController.text = prefs.getString('system_instruction') ?? 'The stream of images are coming live from the user\'s smart glasses, they are not a recorded video. For example, don\'t say "the person in the video", say "the person in front of you" if you are referring to someone you can see in the images. If an image is blurry, don\'t say the image is too blurry, wait for subsequent images that will arrive in the coming few seconds that might stabilize focus and be easier to process.\n\nAfter the user asks a question, never restate the question but instead directly answer it. No need to start responding when the images come in, wait for the user to start talking and only refer to the live images when relevant.\n\nTry not to repeat what the user is asking unless you\'re really unsure.';
       _voiceName = GeminiVoiceName.values.firstWhere(
         (e) => e.toString().split('.').last == (prefs.getString('voice_name') ?? 'Puck'),
         orElse: () => GeminiVoiceName.Puck,
@@ -202,13 +202,13 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
                 await _startFrameStreaming();
 
                 // show microphone emoji
-                await frame!.sendMessage(TxPlainText(msgCode: 0x0b, text: '\u{F0010}'));
+                await frame!.sendMessage(0x0b, TxPlainText(text: '\u{F0010}').pack());
               }
               else {
                 await _stopFrameStreaming();
 
                 // prompt the user to begin tapping
-                await frame!.sendMessage(TxPlainText(msgCode: 0x0b, text: 'Double-Tap to resume!'));
+                await frame!.sendMessage(0x0b, TxPlainText(text: 'Double-Tap to resume!').pack());
               }
             }
             // ignore spurious 1-taps
@@ -226,10 +226,10 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
         });
 
       // let Frame know to subscribe for taps and send them to us
-      await frame!.sendMessage(TxCode(msgCode: 0x10, value: 1));
+      await frame!.sendMessage(0x10, TxCode(value: 1).pack());
 
       // prompt the user to begin tapping
-      await frame!.sendMessage(TxPlainText(msgCode: 0x0b, text: 'Double-Tap to begin!'));
+      await frame!.sendMessage(0x0b, TxPlainText(text: 'Double-Tap to begin!').pack());
 
     } catch (e) {
       _errorMsg = 'Error executing application logic: $e';
@@ -256,13 +256,13 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
     if (_streaming) _stopFrameStreaming();
 
     // tell the Frame to stop streaming audio (regardless of if we are currently)
-    await frame!.sendMessage(TxCode(msgCode: 0x30, value: 0));
+    await frame!.sendMessage(0x30, TxCode(value: 0).pack());
 
     // let Frame know to stop sending taps too
-    await frame!.sendMessage(TxCode(msgCode: 0x10, value: 0));
+    await frame!.sendMessage(0x10, TxCode(value: 0).pack());
 
     // clear the display
-    await frame!.sendMessage(TxPlainText(msgCode: 0x0b, text: ' '));
+    await frame!.sendMessage(0x0b, TxPlainText(text: ' ').pack());
 
     // disconnect from Gemini
     await _gemini.disconnect();
@@ -290,7 +290,7 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
       _frameAudioSubs = _frameAudioSampleStream!.listen(_handleFrameAudio);
 
       // tell Frame to start streaming audio
-      await frame!.sendMessage(TxCode(msgCode: 0x30, value: 1));
+      await frame!.sendMessage(0x30, TxCode(value: 1).pack());
       // TODO why isn't _streaming = true set here?
 
       // immediately request a photo, then every few seconds while the conversation is running
@@ -329,7 +329,7 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
     _photoTimer = null;
 
     // tell Frame to stop streaming audio
-    await frame!.sendMessage(TxCode(msgCode: 0x30, value: 0));
+    await frame!.sendMessage(0x30, TxCode(value: 0).pack());
 
     // rxAudio.detach() to close/flush the controller controlling our audio stream
     _rxAudio.detach();
@@ -351,7 +351,7 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
     // TODO check if we can request a raw (headerless) jpeg
     //_rxPhoto.
 
-    await frame!.sendMessage(TxCaptureSettings(msgCode: 0x0d, resolution: resolution, qualityIndex: qualityIndex));
+    await frame!.sendMessage(0x0d, TxCaptureSettings(resolution: resolution, qualityIndex: qualityIndex).pack());
   }
 
 
