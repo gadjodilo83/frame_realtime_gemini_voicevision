@@ -8,33 +8,56 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'audio_data_extractor.dart';
 
-enum GeminiVoiceName { Puck, Charon, Kore, Fenrir, Aoede, Leda, Orus, Zephyr }
+enum GeminiVoiceName { none, Puck, Charon, Kore, Fenrir, Aoede, Leda, Orus, Zephyr }
 
 class GeminiRealtime {
   final _log = Logger("Gem");
-
   WebSocketChannel? _channel;
   StreamSubscription<dynamic>? _channelSubs;
   bool _connected = false;
 
-  // interestingly, 'response_modalities' seems to allow only "text", "audio", "image" - not a list. Audio only is fine for us
-  // Valid voices are: Puck, Charon, Kore, Fenrir, Aoede (Set to Puck, override in connect())
-  // system instruction is also not set in the template map (set during connect())
-  final Map<String, dynamic> _setupMap = {'setup': { 'model': 'models/gemini-2.0-flash-live-001', 'generation_config': {'response_modalities': 'audio', 'speech_config': {'voice_config': {'prebuilt_voice_config': {'voice_name': 'Puck'}}}}, 'system_instruction': { 'parts': [ { 'text': '' } ] }}};
-  final Map<String, dynamic> _realtimeAudioInputMap = {'realtimeInput': { 'mediaChunks': [{'mimeType': 'audio/pcm;rate=16000', 'data': ''}]}};
-  final Map<String, dynamic> _realtimeImageInputMap = {'realtimeInput': { 'mediaChunks': [{'mimeType': 'image/jpeg', 'data': ''}]}};
+  final void Function(String)? textCallback;
+  final Function(String) eventLogger;
+  final Function() audioReadyCallback;
+
+  // Default setupMap – wird im connect() dynamisch angepasst!
+  final Map<String, dynamic> _setupMap = {
+    'setup': {
+      'model': 'models/gemini-2.0-flash-live-001',
+      'generation_config': {
+        'response_modalities': 'audio', // wird dynamisch auf 'text' gesetzt
+        'speech_config': {
+          'voice_config': {
+            'prebuilt_voice_config': {'voice_name': 'Puck'}
+          }
+        }
+      },
+      'system_instruction': {'parts': [{'text': ''}]}
+    }
+  };
+  final Map<String, dynamic> _realtimeAudioInputMap = {
+    'realtimeInput': {
+      'mediaChunks': [
+        {'mimeType': 'audio/pcm;rate=16000', 'data': ''}
+      ]
+    }
+  };
+  final Map<String, dynamic> _realtimeImageInputMap = {
+    'realtimeInput': {
+      'mediaChunks': [
+        {'mimeType': 'image/jpeg', 'data': ''}
+      ]
+    }
+  };
 
   // audio buffer
   final _audioBuffer = ListQueue<Uint8List>();
 
-  // a handle on the main app's event logger (in the UI)
-  final Function(String) eventLogger;
-
-  // a callback to notify the main app that some audio is ready for playback
-  final Function() audioReadyCallback;
-
-  /// Constructor just registers callbacks for audio ready and log messages
-  GeminiRealtime(this.audioReadyCallback, this.eventLogger);
+  GeminiRealtime(
+    this.audioReadyCallback,
+    this.eventLogger,
+    {this.textCallback}
+  );
 
   /// Returns the current state of the Gemini connection
   bool isConnected() => _connected;
@@ -44,26 +67,29 @@ class GeminiRealtime {
     eventLogger('Connecting to Gemini');
     _log.info('Connecting to Gemini');
 
-    // configure the session with the specified voice and system instruction
-    _setupMap['setup']['generation_config']['speech_config']['voice_config']['prebuilt_voice_config']['voice_name'] = voice.name;
-    _setupMap['setup']['system_instruction']['parts'][0]['text'] = systemInstruction;
+    // --- Dynamisch: Keine Sprachausgabe oder Voice ---
+    if (voice == GeminiVoiceName.none) {
+      _setupMap['setup']['generation_config'].remove('speech_config');
+      _setupMap['setup']['generation_config']['response_modalities'] = 'text';
+    } else {
+      _setupMap['setup']['generation_config']['response_modalities'] = 'audio';
+      _setupMap['setup']['generation_config']['speech_config'] = {
+        'voice_config': {
+          'prebuilt_voice_config': {'voice_name': voice.name}
+        }
+      };
+    }
 
-    // get the audio playback ready
+    _setupMap['setup']['system_instruction']['parts'][0]['text'] = systemInstruction;
     _audioBuffer.clear();
 
-    // get a fresh websocket channel each time we start a conversation for now
     await _channel?.sink.close();
-    _channel = WebSocketChannel.connect(Uri.parse('wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=$apiKey'));
+    _channel = WebSocketChannel.connect(Uri.parse(
+      'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=$apiKey'
+    ));
 
-    // connection doesn't complete immediately, wait until it's ready
-    // TODO check what happens if API key is bad, host is bad etc, how long are the timeouts?
-    // and return false if not connected properly (or throw the exception and print the error?)
     await _channel!.ready;
-
-    // set up stream handler for channel to handle events
     _channelSubs = _channel!.stream.listen(_handleGeminiEvent);
-
-    // set up the config for the model/modality
     _log.info(_setupMap);
     _channel!.sink.add(jsonEncode(_setupMap));
 
@@ -87,15 +113,8 @@ class GeminiRealtime {
       eventLogger('App trying to send audio when disconnected');
       return;
     }
-
-    // base64 encode
     var base64audio = base64Encode(pcm16x16);
-
-    // set the data into the realtime input map before serializing
-    // TODO can't I just cache the last little map and set it there at least?
     _realtimeAudioInputMap['realtimeInput']['mediaChunks'][0]['data'] = base64audio;
-
-    // send data to websocket
     _channel!.sink.add(jsonEncode(_realtimeAudioInputMap));
   }
 
@@ -105,91 +124,91 @@ class GeminiRealtime {
       eventLogger('App trying to send a photo when disconnected');
       return;
     }
-
-    // base64 encode
     var base64image = base64Encode(jpegBytes);
-
-    // set the data into the realtime input map before serializing
-    // TODO can't I just cache the last little map and set it there at least?
     _realtimeImageInputMap['realtimeInput']['mediaChunks'][0]['data'] = base64image;
-
-    // send data to websocket
     _log.info('sending photo');
     _channel!.sink.add(jsonEncode(_realtimeImageInputMap));
   }
 
-  /// If there is any audio that has been received from Gemini, ready for playback
-  bool hasResponseAudio() {
-    return _audioBuffer.isNotEmpty;
-  }
+  bool hasResponseAudio() => _audioBuffer.isNotEmpty;
 
-  /// Returns PCM16 24kHz samples as ByteData (interpret as PCM16)
   ByteData getResponseAudioByteData() {
     if (hasResponseAudio()) {
       return (_audioBuffer.removeFirst()).buffer.asByteData();
-    }
-    else {
+    } else {
       return ByteData(0);
     }
   }
 
-  /// Clears the audio buffer so the main app can't pull any more samples
   void stopResponseAudio() {
-    // by clearing the buffered PCM data, the player will stop being fed audio
     _audioBuffer.clear();
   }
 
   /// handle the Gemini server events that come through the websocket
-  /// TODO work out how the closed/session time is up message comes back - maybe just the socket status subscription?
   FutureOr<void> _handleGeminiEvent(dynamic eventJson) async {
     String eventString = utf8.decode(eventJson);
-
-    // parse the json
+    _log.info('Gemini RAW EVENT: $eventString');
     var event = jsonDecode(eventString);
 
-    // try audio message types first
+    // Audio-Handling (wie gehabt)
     var audioData = AudioDataExtractor.extractAudioData(event);
-
     if (audioData != null) {
       for (var chunk in audioData) {
         _audioBuffer.add(chunk);
-
-        // notify the main app in case playback had stopped, it should start again
         audioReadyCallback();
       }
     }
-    else {
-      // some other kind of event
-      var serverContent = event['serverContent'];
-      if (serverContent != null) {
-        if (serverContent['interrupted'] != null) {
-          // TODO work out how much audio had already been played/how much was unplayed
 
-          // process interruption to stop audio
-          _audioBuffer.clear();
-          eventLogger('---Interruption---');
-          _log.fine('Response interrupted by user');
-
-          // TODO communicate interruption playback point back to server?
-        }
-        else if (serverContent['turnComplete'] != null) {
-          // server has finished sending
-          eventLogger('Server turn complete');
-        }
-        else {
-          eventLogger(serverContent.toString());
-        }
+    // TEXT-Handling
+    String? geminiText;
+    var serverContent = event['serverContent'];
+    if (serverContent != null) {
+      // 1. NEU: modelTurn (neues Gemini API Format!)
+      if (serverContent['modelTurn'] != null &&
+          serverContent['modelTurn']['parts'] != null &&
+          serverContent['modelTurn']['parts'] is List &&
+          serverContent['modelTurn']['parts'].isNotEmpty &&
+          serverContent['modelTurn']['parts'][0]['text'] != null) {
+        geminiText = serverContent['modelTurn']['parts'][0]['text'];
       }
-      else if (event['setupComplete'] != null) {
-        eventLogger('Setup is complete');
-        _log.info('Gemini setup is complete');
-      }
-      else {
-        // unknown server message
-        _log.info(eventString);
-        eventLogger(eventString);
+      // 2. ALT: Nur 'parts'
+      else if (serverContent['parts'] != null &&
+               serverContent['parts'] is List &&
+               serverContent['parts'].isNotEmpty &&
+               serverContent['parts'][0]['text'] != null) {
+        geminiText = serverContent['parts'][0]['text'];
       }
     }
-  }
+    // 3. Fallback: candidates[0].content.parts[0].text (bei manchen Gemini APIs)
+    if (geminiText == null && event['candidates'] != null) {
+      try {
+        geminiText = event['candidates'][0]['content']['parts'][0]['text'];
+      } catch (_) {}
+    }
 
+    // d) Callback aufrufen, wenn Text gefunden!
+    if (geminiText != null && textCallback != null && geminiText.isNotEmpty) {
+      _log.info('Gemini Übersetzungstext: $geminiText');
+      textCallback!(geminiText);
+    }
+
+    // Logging wie gehabt:
+    if (serverContent != null) {
+      if (serverContent['interrupted'] != null) {
+        _audioBuffer.clear();
+        eventLogger('---Interruption---');
+        _log.fine('Response interrupted by user');
+      } else if (serverContent['turnComplete'] != null) {
+        eventLogger('Server turn complete');
+      } else {
+        eventLogger(serverContent.toString());
+      }
+    } else if (event['setupComplete'] != null) {
+      eventLogger('Setup is complete');
+      _log.info('Gemini setup is complete');
+    } else {
+      _log.info('Unbekanntes Gemini-Event: $eventString');
+      eventLogger(eventString);
+    }
+  }
 }
