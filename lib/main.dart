@@ -11,7 +11,6 @@ import 'package:logging/logging.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:frame_msg/rx/audio.dart';
-import 'package:frame_msg/rx/photo.dart';
 import 'package:frame_msg/rx/tap.dart';
 import 'package:frame_msg/tx/capture_settings.dart';
 import 'package:frame_msg/tx/code.dart';
@@ -20,12 +19,8 @@ import 'package:simple_frame_app/simple_frame_app.dart';
 import 'foreground_service.dart';
 
 void main() {
-  // Set up Android foreground service
   initializeForegroundService();
-
-  // quieten FBP logs
   fbp.FlutterBluePlus.setLogLevel(fbp.LogLevel.info);
-
   runApp(const MainApp());
 }
 
@@ -33,101 +28,143 @@ final _log = Logger("MainApp");
 
 class MainApp extends StatefulWidget {
   const MainApp({super.key});
-
   @override
   MainAppState createState() => MainAppState();
 }
 
-/// SimpleFrameAppState mixin helps to manage the lifecycle of the Frame connection outside of this file
 class MainAppState extends State<MainApp> with SimpleFrameAppState {
+  static const int maxFrameLines = 4;
+  static const int maxFrameLineLength = 32;
+  List<String> _frameLines = [];
+  String _currentLine = '';
 
-  /// realtime voice application members
+
+  final List<String> _languages = [
+    "German", "English", "Italian", "Spanish", "French",
+  ];
+  final Map<String, String> _languageMap = {
+    "German": "German",
+    "English": "English",
+    "Italian": "Italian",
+    "Spanish": "Spanish",
+    "French": "French",
+  };
+  String _inputLanguage = "German";
+  String _outputLanguage = "Italian";
+
   late final GeminiRealtime _gemini;
-  GeminiVoiceName _voiceName = GeminiVoiceName.Puck;
-
-  // status of audio output with FlutterPCMSound
+  GeminiVoiceName _voiceName = GeminiVoiceName.none;
   bool _playingAudio = false;
-
-  // true when audio/photos are being streamed from Frame
   bool _streaming = false;
-
-  // tap subscription
   StreamSubscription<int>? _tapSubs;
-
-  // Audio: 8kHz 16-bit linear PCM from Frame mic (only the high 10 bits iirc)
   final RxAudio _rxAudio = RxAudio(streaming: true);
   StreamSubscription<Uint8List>? _frameAudioSubs;
   Stream<Uint8List>? _frameAudioSampleStream;
 
-  // Photos: 720px VERY_HIGH quality JPEGs
-  static const resolution = 720;
-  static const qualityIndex = 4;
-  static const qualityLevel = 'VERY_HIGH';
-  final RxPhoto _rxPhoto = RxPhoto(quality: qualityLevel, resolution: resolution);
-  StreamSubscription<Uint8List>? _photoSubs;
-  Stream<Uint8List>? _photoStream;
-  static const int photoInterval = 3;
-  Timer? _photoTimer;
-  Image? _image;
-
-  // UI display
   final _apiKeyController = TextEditingController();
-  final _systemInstructionController = TextEditingController();
-  final List<String> _eventLog = List.empty(growable: true);
+  final _eventLog = <String>[];
   final _eventLogController = ScrollController();
   static const _textStyle = TextStyle(fontSize: 20);
   String? _errorMsg;
 
   MainAppState() {
-    // filter logging
     hierarchicalLoggingEnabled = true;
     Logger.root.level = Level.FINE;
     Logger('Bluetooth').level = Level.FINE;
-    Logger('RxPhoto').level = Level.FINE;
     Logger('RxAudio').level = Level.FINE;
     Logger('RxTap').level = Level.FINE;
-
     Logger.root.onRecord.listen((record) {
       debugPrint('${record.level.name}: [${record.loggerName}] ${record.time}: ${record.message}');
     });
 
-    // Pass the "audio ready" and UI logger callbacks to GeminiRealtime class
-    // so audio will play and events can be displayed
-    _gemini = GeminiRealtime(_audioReadyCallback, _appendEvent);
+    _gemini = GeminiRealtime(
+      _audioReadyCallback,
+      _appendEvent,
+      textCallback: _onGeminiText,
+    );
   }
+
+  /// Optimale Anzeige für das Frame-Display:
+  /// - Zeilenumbruch bei max. 32 Zeichen
+  /// - Leerschläge korrekt, keine doppelten Zeilen
+  /// - Automatisches Scrolling (max. 5 Zeilen sichtbar)
+void _onGeminiText(String text) async {
+  // 1. Entferne CRLF, ersetze durch LF
+  text = text.replaceAll('\r\n', '\n');
+
+  // 2. Splitte den Input falls mehrere Zeilenumbrüche in einem Fragment kommen
+  List<String> parts = text.split('\n');
+
+  for (int i = 0; i < parts.length; i++) {
+    String fragment = parts[i];
+
+    // (a) Leeres Fragment nach \n? => Nur Zeile abschließen
+    if (fragment.trim().isEmpty) {
+      if (_currentLine.trim().isNotEmpty) {
+        _frameLines.add(_currentLine.trimRight());
+        _currentLine = '';
+      }
+      continue;
+    }
+
+    // (b) Text an die aktuelle Zeile anfügen
+    if (_currentLine.isNotEmpty && !_currentLine.endsWith(' ') && !fragment.startsWith(' ')) {
+      _currentLine += ' ';
+    }
+    _currentLine += fragment;
+
+    // (c) Zeilenumbruch bei maxFrameLineLength Zeichen
+    while (_currentLine.length > maxFrameLineLength) {
+      _frameLines.add(_currentLine.substring(0, maxFrameLineLength));
+      _currentLine = _currentLine.substring(maxFrameLineLength);
+    }
+
+    // (d) Nach jeder Teilzeile (außer der letzten) abschließen
+    if (i < parts.length - 1) {
+      if (_currentLine.trim().isNotEmpty) {
+        _frameLines.add(_currentLine.trimRight());
+        _currentLine = '';
+      }
+    }
+  }
+
+  // 3. Immer aktuelle Zeile als letzte Zeile anzeigen (falls noch offen)
+  final displayLines = List<String>.from(_frameLines);
+  if (_currentLine.trim().isNotEmpty) displayLines.add(_currentLine);
+
+  // 4. Maximal 5 Zeilen anzeigen (Scrolling)
+  final visibleLines = displayLines.length > maxFrameLines
+      ? displayLines.sublist(displayLines.length - maxFrameLines)
+      : displayLines;
+
+  final displayText = visibleLines.join('\n');
+  if (frame != null) {
+    await frame!.sendMessage(0x0b, TxPlainText(text: displayText).pack());
+  }
+  _appendEvent("Übersetzung: $displayText");
+}
+
 
   @override
   void initState() {
     super.initState();
-
     _asyncInit();
   }
 
   Future<void> _asyncInit() async {
-    // load up the saved text field data
     await _loadPrefs();
-
-    // Initialize the audio playback framework
-    // (Gemini sends response audio as mono pcm16 24kHz)
     const sampleRate = 24000;
     FlutterPcmSound.setLogLevel(LogLevel.error);
     await FlutterPcmSound.setup(sampleRate: sampleRate, channelCount: 1);
     FlutterPcmSound.setFeedThreshold(sampleRate ~/ 30);
     FlutterPcmSound.setFeedCallback(_onFeed);
-
-    // then kick off the connection to Frame and start the app if possible, unawaited
-    tryScanAndConnectAndStart(andRun: true);
   }
 
-  /// Feed the audio player with samples if we have some more, but don't send
-  /// too much to the player because we want to be able to interrupt quickly
-  /// If we don't feed the player and it stops, we won't get called again so we need to kick it off again
   void _onFeed(int remainingFrames) async {
     if (remainingFrames < 2000) {
       if (_gemini.hasResponseAudio()) {
         await FlutterPcmSound.feed(PcmArrayInt16(bytes: _gemini.getResponseAudioByteData()));
-      }
-      else {
+      } else {
         _log.fine('Response audio ended');
         _playingAudio = false;
       }
@@ -139,7 +176,6 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
     await _gemini.disconnect();
     await _frameAudioSubs?.cancel();
     await FlutterPcmSound.release();
-    _photoTimer?.cancel();
     super.dispose();
   }
 
@@ -147,10 +183,9 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
       _apiKeyController.text = prefs.getString('api_key') ?? '';
-      _systemInstructionController.text = prefs.getString('system_instruction') ?? 'The stream of images are coming live from the user\'s smart glasses, they are not a recorded video. For example, don\'t say "the person in the video", say "the person in front of you" if you are referring to someone you can see in the images. If an image is blurry, don\'t say the image is too blurry, wait for subsequent images that will arrive in the coming few seconds that might stabilize focus and be easier to process.\n\nAfter the user asks a question, never restate the question but instead directly answer it. No need to start responding when the images come in, wait for the user to start talking and only refer to the live images when relevant.\n\nTry not to repeat what the user is asking unless you\'re really unsure.';
       _voiceName = GeminiVoiceName.values.firstWhere(
-        (e) => e.toString().split('.').last == (prefs.getString('voice_name') ?? 'Puck'),
-        orElse: () => GeminiVoiceName.Puck,
+        (e) => e.toString().split('.').last == (prefs.getString('voice_name') ?? 'none'),
+        orElse: () => GeminiVoiceName.none,
       );
     });
   }
@@ -158,231 +193,114 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
   Future<void> _savePrefs() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('api_key', _apiKeyController.text);
-    await prefs.setString('system_instruction', _systemInstructionController.text);
     await prefs.setString('voice_name', _voiceName.name);
   }
 
-  /// This application uses Gemini's realtime API over WebSockets.
-  /// It has a running main loop in this function and also on the Frame (frame_app.lua)
+  String _buildGeminiPrompt(String input, String output) {
+    return 'You act as a real-time translator and translate everything you hear from '
+        '"${_languageMap[input]}" into "${_languageMap[output]}". '
+        'Output only the translation, no explanation, no preface.';
+  }
+
   @override
   Future<void> run() async {
-    // validate API key exists at least
     _errorMsg = null;
     if (_apiKeyController.text.isEmpty) {
       setState(() {
         _errorMsg = 'Error: Set value for Gemini API Key';
       });
-
       return;
     }
-
-    // connect to Gemini realtime
-    await _gemini.connect(_apiKeyController.text, _voiceName, _systemInstructionController.text);
+    final systemPrompt = _buildGeminiPrompt(_inputLanguage, _outputLanguage);
+    await _gemini.connect(_apiKeyController.text, _voiceName, systemPrompt);
 
     if (!_gemini.isConnected()) {
       _log.severe('Connection to Gemini failed');
       return;
     }
-
-    setState(() {
-      currentState = ApplicationState.running;
-    });
+    setState(() { currentState = ApplicationState.running; });
 
     try {
-      // listen for double taps to start/stop transcribing
       _tapSubs?.cancel();
       _tapSubs = RxTap().attach(frame!.dataResponse)
         .listen((taps) async {
           _log.info('taps: $taps');
           if (_gemini.isConnected()) {
-
             if (taps >= 2) {
-
               if (!_streaming) {
                 await _startFrameStreaming();
-
-                // show microphone emoji
                 await frame!.sendMessage(0x0b, TxPlainText(text: '\u{F0010}').pack());
-              }
-              else {
+              } else {
                 await _stopFrameStreaming();
-
-                // prompt the user to begin tapping
                 await frame!.sendMessage(0x0b, TxPlainText(text: 'Double-Tap to resume!').pack());
               }
             }
-            // ignore spurious 1-taps
-          }
-          else {
-            // Disconnected from Gemini, go back to Ready state
+          } else {
             _appendEvent('Disconnected from Gemini');
-
             _stopFrameStreaming();
-
             setState(() {
               currentState = ApplicationState.ready;
             });
           }
         });
 
-      // let Frame know to subscribe for taps and send them to us
       await frame!.sendMessage(0x10, TxCode(value: 1).pack());
-
-      // prompt the user to begin tapping
       await frame!.sendMessage(0x0b, TxPlainText(text: 'Double-Tap to begin!').pack());
-
     } catch (e) {
       _errorMsg = 'Error executing application logic: $e';
       _log.fine(_errorMsg);
-
       setState(() {
         currentState = ApplicationState.ready;
       });
     }
   }
 
-  /// Once running(), audio streaming is controlled by taps. But the user can cancel
-  /// here as well, whether they are currently streaming audio or not.
   @override
   Future<void> cancel() async {
-    setState(() {
-      currentState = ApplicationState.canceling;
-    });
-
-    // cancel the subscription for taps
+    setState(() { currentState = ApplicationState.canceling; });
     _tapSubs?.cancel();
-
-    // cancel the conversation if it's running
     if (_streaming) _stopFrameStreaming();
-
-    // tell the Frame to stop streaming audio (regardless of if we are currently)
     await frame!.sendMessage(0x30, TxCode(value: 0).pack());
-
-    // let Frame know to stop sending taps too
     await frame!.sendMessage(0x10, TxCode(value: 0).pack());
-
-    // clear the display
     await frame!.sendMessage(0x0b, TxPlainText(text: ' ').pack());
-
-    // disconnect from Gemini
     await _gemini.disconnect();
-
-    setState(() {
-      currentState = ApplicationState.ready;
-    });
+    setState(() { currentState = ApplicationState.ready; });
   }
 
-  /// When we receive a tap to start the conversation, we need to start
-  /// audio and photo streaming on Frame
   Future<void> _startFrameStreaming() async {
+    _currentLine = '';
+    _frameLines.clear();
     _appendEvent('Starting Frame Streaming');
-
     FlutterPcmSound.start();
-
-    // app state is conversing; Gemini is connected for the entire duration
     _streaming = true;
-
     try {
-      // the audio stream from Frame, which needs to be closed() to stop the streaming
       _frameAudioSampleStream = _rxAudio.attach(frame!.dataResponse);
       _frameAudioSubs?.cancel();
-      // TODO consider buffering if 128 bytes of PCM16 / 64 bytes of ulaw is too little (e.g. if measured in requests not tokens)
       _frameAudioSubs = _frameAudioSampleStream!.listen(_handleFrameAudio);
-
-      // tell Frame to start streaming audio
       await frame!.sendMessage(0x30, TxCode(value: 1).pack());
-      // TODO why isn't _streaming = true set here?
-
-      // immediately request a photo, then every few seconds while the conversation is running
-      await _requestPhoto();
-      _photoTimer = Timer.periodic(const Duration(seconds: photoInterval), (timer) async {
-        _log.info('Timer Fired!');
-
-        if (!_streaming) {
-          timer.cancel();
-          _photoTimer = null;
-          _log.info('Streaming ended, stop requesting photos');
-          return;
-        }
-
-        // send the request to Frame
-        await _requestPhoto();
-      });
-
     } catch (e) {
       _log.warning(() => 'Error executing application logic: $e');
     }
   }
 
-  /// When we receive a tap to stop the conversation, cancel the audio streaming from Frame,
-  /// which will send "final chunk" message, which will close the audio stream
-  /// and the Gemini conversation needs to stop too
   Future<void> _stopFrameStreaming() async {
+    _currentLine = '';
+    _frameLines.clear();
     _streaming = false;
-
-    // stop audio playback
-    // by clearing the buffered PCM data, the player will stop being fed audio
     _gemini.stopResponseAudio();
-
-    // stop requesting photos periodically
-    _photoTimer?.cancel();
-    _photoTimer = null;
-
-    // tell Frame to stop streaming audio
     await frame!.sendMessage(0x30, TxCode(value: 0).pack());
-
-    // rxAudio.detach() to close/flush the controller controlling our audio stream
     _rxAudio.detach();
-
     _appendEvent('Ending Frame Streaming');
   }
 
-  /// Request a photo from Frame
-  Future<void> _requestPhoto() async {
-    _log.info('requesting photo from Frame');
-
-    // prepare to receive the photo from Frame
-    // this must happen each time as the stream
-    // closes after each photo is sent
-    _photoStream = _rxPhoto.attach(frame!.dataResponse);
-    _photoSubs?.cancel();
-    _photoSubs = _photoStream!.listen(_handleFramePhoto);
-
-    // TODO check if we can request a raw (headerless) jpeg
-    //_rxPhoto.
-
-    await frame!.sendMessage(0x0d, TxCaptureSettings(resolution: resolution, qualityIndex: qualityIndex).pack());
-  }
-
-
-  /// pass the audio from Frame (upsampled) to the API
   void _handleFrameAudio(Uint8List pcm16x8) {
     if (_gemini.isConnected()) {
-      // upsample PCM16 from 8kHz to 16kHz for Gemini
       var pcm16x16 = AudioUpsampler.upsample8kTo16k(pcm16x8);
-
-      // send audio up to Gemini
       _gemini.sendAudio(pcm16x16);
     }
   }
 
-    /// pass the photo from Frame to the API
-  void _handleFramePhoto(Uint8List jpegBytes) {
-    _log.info('photo received from Frame');
-    if (_gemini.isConnected()) {
-
-      _gemini.sendPhoto(jpegBytes);
-    }
-
-    // update the UI with the latest image
-    setState(() {
-      _image = Image.memory(jpegBytes, gaplessPlayback: true);
-    });
-  }
-
-  /// Notification from GeminiRealtime that some audio is ready for playback
   void _audioReadyCallback() {
-    // kick off playback if it's not playing
     if (!_playingAudio) {
       _playingAudio = true;
       _onFeed(0);
@@ -390,11 +308,8 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
     }
   }
 
-  /// puts some text into our scrolling log in the UI
   void _appendEvent(String evt) {
-    setState(() {
-      _eventLog.add(evt);
-    });
+    setState(() { _eventLog.add(evt); });
     _scrollToBottom();
   }
 
@@ -415,12 +330,12 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
     startForegroundService();
     return WithForegroundTask(
       child: MaterialApp(
-        title: 'Frame Realtime Gemini Voice and Vision',
+        title: 'Frame Realtime Gemini Voice Translator',
         theme: ThemeData.dark(),
         home: Scaffold(
           appBar: AppBar(
-            title: const Text('Frame Realtime Gemini Voice and Vision'),
-            actions: [getBatteryWidget()]
+            title: const Text('Frame Realtime Gemini Voice Translator'),
+            actions: [getBatteryWidget()],
           ),
           body: Center(
             child: Container(
@@ -441,9 +356,7 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
                       DropdownButton<GeminiVoiceName>(
                         value: _voiceName,
                         onChanged: (GeminiVoiceName? newValue) {
-                          setState(() {
-                          _voiceName = newValue!;
-                          });
+                          setState(() { _voiceName = newValue!; });
                         },
                         items: GeminiVoiceName.values.map<DropdownMenuItem<GeminiVoiceName>>((GeminiVoiceName value) {
                           return DropdownMenuItem<GeminiVoiceName>(
@@ -455,57 +368,91 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState {
                     ],
                   ),
                   const SizedBox(height: 10),
-                  TextField(
-                    controller: _systemInstructionController,
-                    maxLines: 3,
-                    decoration: const InputDecoration(hintText: 'System Instruction'),
-                  ),
-                  if (_errorMsg != null) Text(_errorMsg!, style: const TextStyle(backgroundColor: Colors.red)),
-                  ElevatedButton(onPressed: _savePrefs, child: const Text('Save')),
-
-                  Expanded(child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
+                  Row(
                     children: [
-                      _image ?? Container(),
                       Expanded(
-                        child: ListView.builder(
-                          controller: _eventLogController, // Auto-scroll controller
-                          itemCount: _eventLog.length,
-                          itemBuilder: (context, index) {
-                            return Text(
-                              _eventLog[index],
-                              style: _textStyle,
-                            );
-                          },
+                        child: DropdownButton<String>(
+                          value: _inputLanguage,
+                          onChanged: (value) => setState(() => _inputLanguage = value!),
+                          items: _languages
+                              .map((lang) => DropdownMenuItem(
+                                    value: lang,
+                                    child: Text(lang),
+                                  ))
+                              .toList(),
+                        ),
+                      ),
+                      const Icon(Icons.arrow_forward),
+                      Expanded(
+                        child: DropdownButton<String>(
+                          value: _outputLanguage,
+                          onChanged: (value) => setState(() => _outputLanguage = value!),
+                          items: _languages
+                              .map((lang) => DropdownMenuItem(
+                                    value: lang,
+                                    child: Text(lang),
+                                  ))
+                              .toList(),
                         ),
                       ),
                     ],
-                  )),
+                  ),
+                  if (_errorMsg != null)
+                    Text(_errorMsg!, style: const TextStyle(backgroundColor: Colors.red)),
+                  ElevatedButton(onPressed: _savePrefs, child: const Text('Save')),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 10.0),
+                    child: ElevatedButton.icon(
+                      icon: const Icon(Icons.bluetooth_searching),
+                      label: const Text("Connect with Frame"),
+                      onPressed: () => tryScanAndConnectAndStart(andRun: true),
+                    ),
+                  ),
+                  Expanded(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Expanded(
+                          child: ListView.builder(
+                            controller: _eventLogController,
+                            itemCount: _eventLog.length,
+                            itemBuilder: (context, index) {
+                              return Text(
+                                _eventLog[index],
+                                style: _textStyle,
+                              );
+                            },
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                 ],
               ),
             ),
           ),
           floatingActionButton: Stack(
             children: [
-              if (_eventLog.isNotEmpty) Positioned(
-                bottom: 90,
-                right: 20,
-                child: FloatingActionButton(
-                  onPressed: () {
-                    Share.share(_eventLog.join('\n'));
-                  },
-                  child: const Icon(Icons.share)),
-              ),
+              if (_eventLog.isNotEmpty)
+                Positioned(
+                  bottom: 90,
+                  right: 20,
+                  child: FloatingActionButton(
+                    onPressed: () {
+                      Share.share(_eventLog.join('\n'));
+                    },
+                    child: const Icon(Icons.share)),
+                ),
               Positioned(
                 bottom: 20,
                 right: 20,
                 child: getFloatingActionButtonWidget(const Icon(Icons.mic), const Icon(Icons.mic_off)) ?? Container(),
               ),
-            ]
+            ],
           ),
           persistentFooterButtons: getFooterButtonsWidget(),
         ),
-      )
+      ),
     );
   }
 }
